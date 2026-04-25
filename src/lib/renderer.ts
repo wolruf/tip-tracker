@@ -77,7 +77,7 @@ export class TrailRenderer {
 
   /**
    * Render a single neon trail using cubic splines
-   * Draws smooth curves with per-segment opacity gradients
+   * Draws individual segments for maximum opacity control
    */
   private renderNeonTrail(trail: TrailPoint[], color: string): void {
     if (trail.length < 2) return;
@@ -85,100 +85,93 @@ export class TrailRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
 
-    // Pre-calculate all canvas coordinates and control points
-    const points: { x: number; y: number }[] = [];
-    const controlPoints: { cp1x: number; cp1y: number; cp2x: number; cp2y: number }[] = [];
-    const opacities: number[] = [];
+    // Pre-calculate all canvas coordinates, control points, and opacities
+    const segments: {
+      x1: number; y1: number;
+      cp1x: number; cp1y: number;
+      cp2x: number; cp2y: number;
+      x2: number; y2: number;
+      opacity: number;
+    }[] = [];
 
-    for (let i = 0; i < trail.length; i++) {
-      points.push({
-        x: trail[i].x * width,
-        y: trail[i].y * height
+    for (let i = 0; i < trail.length - 1; i++) {
+      const p0 = trail[Math.max(0, i - 1)];
+      const p1 = trail[i];
+      const p2 = trail[i + 1];
+      const p3 = trail[Math.min(trail.length - 1, i + 2)];
+
+      const cp = this.getControlPoints(p0, p1, p2, p3, width, height, 1.2);
+
+      const progress = (i + 1) / (trail.length - 1);
+      const opacity = smoothstep(0, 1, progress) * p2.opacity;
+
+      segments.push({
+        x1: p1.x * width,
+        y1: p1.y * height,
+        cp1x: cp.cp1x,
+        cp1y: cp.cp1y,
+        cp2x: cp.cp2x,
+        cp2y: cp.cp2y,
+        x2: p2.x * width,
+        y2: p2.y * height,
+        opacity,
       });
-
-      const progress = i / (trail.length - 1);
-      opacities.push(smoothstep(0, 1, progress) * trail[i].opacity);
-
-      // Calculate control points for segment starting at this point
-      if (i < trail.length - 1) {
-        const cp = this.getControlPoints(
-          trail[Math.max(0, i - 1)],
-          trail[i],
-          trail[i + 1],
-          trail[Math.min(trail.length - 1, i + 2)],
-          width, height, 1.2
-        );
-        controlPoints.push(cp);
-      }
     }
 
-    // Draw in small batches for both smoothness and opacity control
-    // Each batch is a continuous curve with smooth opacity transition
-    const batchSize = 4; // Draw 4 segments at a time for smoothness
+    // Draw each segment individually for per-segment opacity control
+    const whiteCoreLength = Math.min(15, Math.floor(segments.length * 0.5)); // White core spans up to 15 segments or 50% of trail
 
-    for (let batchStart = 0; batchStart < points.length - 1; batchStart += batchSize) {
-      const batchEnd = Math.min(batchStart + batchSize, points.length - 1);
-
-      // Outer glow
-      this.drawCurveBatch(points, controlPoints, opacities, batchStart, batchEnd, color, 16, 20, 0.25);
+    segments.forEach((seg, i) => {
+      // Multiple thin layers with low opacity for smooth blending
+      // Outer glow - very wide, very low opacity
+      this.drawSegment(seg, color, 24, 30, 0.15);
       // Middle glow
-      this.drawCurveBatch(points, controlPoints, opacities, batchStart, batchEnd, color, 10, 10, 0.5);
-      // Inner core
-      this.drawCurveBatch(points, controlPoints, opacities, batchStart, batchEnd, color, 4, 0, 0.9);
-    }
+      this.drawSegment(seg, color, 16, 20, 0.2);
+      // Inner glow
+      this.drawSegment(seg, color, 10, 10, 0.25);
+      // Core
+      this.drawSegment(seg, color, 5, 0, 0.5);
 
-    // White core at the head (last few segments)
-    const whiteStart = Math.max(0, points.length - 5);
-    this.drawCurveBatch(points, controlPoints, opacities, whiteStart, points.length - 1, '#ffffff', 2, 0, 1.0);
+      // White core with smooth fade-in
+      if (i >= segments.length - whiteCoreLength) {
+        // Calculate fade progress: 0 at start of white section, 1 at tip
+        const whiteProgress = (i - (segments.length - whiteCoreLength)) / (whiteCoreLength - 1);
+        const whiteOpacity = smoothstep(0, 1, whiteProgress);
+        this.drawSegment(seg, '#ffffff', 2, 0, whiteOpacity);
+      }
+    });
   }
 
   /**
-   * Draw a batch of curve segments as one continuous path
+   * Draw a single curve segment with its own opacity
    */
-  private drawCurveBatch(
-    points: { x: number; y: number }[],
-    controlPoints: { cp1x: number; cp1y: number; cp2x: number; cp2y: number }[],
-    opacities: number[],
-    startIdx: number,
-    endIdx: number,
+  private drawSegment(
+    seg: {
+      x1: number; y1: number;
+      cp1x: number; cp1y: number;
+      cp2x: number; cp2y: number;
+      x2: number; y2: number;
+      opacity: number;
+    },
     color: string,
     lineWidth: number,
     shadowBlur: number,
     baseAlpha: number
   ): void {
-    if (startIdx >= endIdx || startIdx >= points.length - 1) return;
-
-    // Calculate gradient from start to end of this batch
-    const alpha1 = opacities[startIdx] * baseAlpha;
-    const alpha2 = opacities[endIdx] * baseAlpha;
-
-    // Create gradient aligned with the batch direction
-    const gradient = this.ctx.createLinearGradient(
-      points[startIdx].x, points[startIdx].y,
-      points[endIdx].x, points[endIdx].y
-    );
-    gradient.addColorStop(0, this.colorWithAlpha(color, alpha1));
-    gradient.addColorStop(1, this.colorWithAlpha(color, alpha2));
+    const alpha = seg.opacity * baseAlpha;
+    if (alpha <= 0.01) return;
 
     this.ctx.save();
-    this.ctx.strokeStyle = gradient;
+    this.ctx.strokeStyle = this.colorWithAlpha(color, alpha);
     this.ctx.lineWidth = lineWidth;
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
+    this.ctx.lineCap = 'butt';
+    this.ctx.lineJoin = 'miter';
     this.ctx.shadowBlur = shadowBlur;
     this.ctx.shadowColor = color;
-    this.ctx.globalAlpha = 1; // Use gradient alpha
 
-    // Draw continuous curve through this batch
     this.ctx.beginPath();
-    this.ctx.moveTo(points[startIdx].x, points[startIdx].y);
-
-    for (let i = startIdx; i < endIdx && i < controlPoints.length; i++) {
-      const cp = controlPoints[i];
-      const p2 = points[i + 1];
-      this.ctx.bezierCurveTo(cp.cp1x, cp.cp1y, cp.cp2x, cp.cp2y, p2.x, p2.y);
-    }
-
+    this.ctx.moveTo(seg.x1, seg.y1);
+    this.ctx.bezierCurveTo(seg.cp1x, seg.cp1y, seg.cp2x, seg.cp2y, seg.x2, seg.y2);
     this.ctx.stroke();
     this.ctx.restore();
   }
