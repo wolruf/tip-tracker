@@ -77,7 +77,7 @@ export class TrailRenderer {
 
   /**
    * Render a single neon trail using cubic splines
-   * Draws individual segments for maximum opacity control
+   * Draws individual segments for maximum opacity control with depth cues
    */
   private renderNeonTrail(trail: TrailPoint[], color: string): void {
     if (trail.length < 2) return;
@@ -85,13 +85,25 @@ export class TrailRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
 
-    // Pre-calculate all canvas coordinates, control points, and opacities
+    // Get average z depth for this trail (closer = more negative z)
+    const avgZ = trail.reduce((sum, p) => sum + p.z, 0) / trail.length;
+
+    // Calculate depth scale factor (closer = larger, further = smaller)
+    // z is typically in range [-0.5, 0.5] in MediaPipe
+    const depthScale = 1 - avgZ * 1.5; // 1.75 when close (z=-0.5), 0.25 when far (z=0.5)
+
+    // Calculate parallax offset (further objects shift more)
+    const parallaxX = avgZ * 40; // pixels
+    const parallaxY = avgZ * 25;
+
+    // Pre-calculate all canvas coordinates, control points, and opacities with depth effects
     const segments: {
       x1: number; y1: number;
       cp1x: number; cp1y: number;
       cp2x: number; cp2y: number;
       x2: number; y2: number;
       opacity: number;
+      depthGlow: number; // extra glow intensity based on depth
     }[] = [];
 
     for (let i = 0; i < trail.length - 1; i++) {
@@ -105,39 +117,54 @@ export class TrailRenderer {
       const progress = (i + 1) / (trail.length - 1);
       const opacity = smoothstep(0, 1, progress) * p2.opacity;
 
+      // Average z for this segment
+      const segmentZ = (p1.z + p2.z) / 2;
+      // Closer segments get more glow (negative z = closer)
+      const depthGlow = Math.max(0, -segmentZ * 0.8);
+
       segments.push({
-        x1: p1.x * width,
-        y1: p1.y * height,
-        cp1x: cp.cp1x,
-        cp1y: cp.cp1y,
-        cp2x: cp.cp2x,
-        cp2y: cp.cp2y,
-        x2: p2.x * width,
-        y2: p2.y * height,
+        x1: p1.x * width + parallaxX,
+        y1: p1.y * height + parallaxY,
+        cp1x: cp.cp1x + parallaxX,
+        cp1y: cp.cp1y + parallaxY,
+        cp2x: cp.cp2x + parallaxX,
+        cp2y: cp.cp2y + parallaxY,
+        x2: p2.x * width + parallaxX,
+        y2: p2.y * height + parallaxY,
         opacity,
+        depthGlow,
       });
     }
 
     // Draw each segment individually for per-segment opacity control
-    const whiteCoreLength = Math.min(15, Math.floor(segments.length * 0.5)); // White core spans up to 15 segments or 50% of trail
+    // Ensure white core always renders for very short trails
+    const whiteCoreLength = Math.max(3, Math.min(15, Math.floor(segments.length * 0.5)));
+
+    // Base widths scaled by depth
+    const baseOuter = 24 * depthScale;
+    const baseMiddle = 16 * depthScale;
+    const baseInner = 10 * depthScale;
+    const baseCore = 5 * depthScale;
 
     segments.forEach((seg, i) => {
-      // Multiple thin layers with low opacity for smooth blending
-      // Outer glow - very wide, very low opacity
-      this.drawSegment(seg, color, 24, 30, 0.15);
-      // Middle glow
-      this.drawSegment(seg, color, 16, 20, 0.2);
-      // Inner glow
-      this.drawSegment(seg, color, 10, 10, 0.25);
-      // Core
-      this.drawSegment(seg, color, 5, 0, 0.5);
+      // Depth-adjusted glow: closer segments glow more
+      const glowBoost = seg.depthGlow;
 
-      // White core with smooth fade-in
+      // Multiple thin layers with low opacity for smooth blending
+      // Outer glow - very wide, very low opacity, boosted by depth
+      this.drawSegment(seg, color, baseOuter, 30 + glowBoost * 20, 0.15 + glowBoost * 0.1);
+      // Middle glow
+      this.drawSegment(seg, color, baseMiddle, 20 + glowBoost * 15, 0.2 + glowBoost * 0.1);
+      // Inner glow
+      this.drawSegment(seg, color, baseInner, 10 + glowBoost * 10, 0.25 + glowBoost * 0.1);
+      // Core - ensure minimum alpha to prevent black appearance
+      this.drawSegment(seg, color, baseCore, 0, Math.max(0.3, 0.5 + glowBoost * 0.2));
+
+      // White core with smooth fade-in - ensure it renders for all segments in short trails
       if (i >= segments.length - whiteCoreLength) {
-        // Calculate fade progress: 0 at start of white section, 1 at tip
-        const whiteProgress = (i - (segments.length - whiteCoreLength)) / (whiteCoreLength - 1);
+        const whiteProgress = (i - (segments.length - whiteCoreLength)) / Math.max(1, whiteCoreLength - 1);
         const whiteOpacity = smoothstep(0, 1, whiteProgress);
-        this.drawSegment(seg, '#ffffff', 2, 0, whiteOpacity);
+        this.drawSegment(seg, '#ffffff', 2 * depthScale, glowBoost * 10, whiteOpacity);
       }
     });
   }
@@ -159,7 +186,8 @@ export class TrailRenderer {
     baseAlpha: number
   ): void {
     const alpha = seg.opacity * baseAlpha;
-    if (alpha <= 0.01) return;
+    // Skip very transparent segments to avoid black artifacts
+    if (alpha <= 0.05) return;
 
     this.ctx.save();
     this.ctx.strokeStyle = this.colorWithAlpha(color, alpha);
@@ -187,7 +215,8 @@ export class TrailRenderer {
   }
 
   /**
-   * Render a glowing dot at the head (latest point) of each trail
+   * Render a small dot at the head (latest point) of each trail
+   * Minimal - just a tiny white dot so the trail's white core is visible
    */
   renderTipDots(fencers: Map<string, Fencer>): void {
     const width = this.canvas.width;
@@ -196,32 +225,20 @@ export class TrailRenderer {
     fencers.forEach((fencer) => {
       if (!fencer.tip) return;
 
-      const x = fencer.tip.x * width;
-      const y = fencer.tip.y * height;
+      // Apply same parallax offset as the trail rendering
+      const avgZ = fencer.tip.z;
+      const parallaxX = avgZ * 40;
+      const parallaxY = avgZ * 25;
+
+      const x = fencer.tip.x * width + parallaxX;
+      const y = fencer.tip.y * height + parallaxY;
 
       this.ctx.save();
 
-      // Outer glow
-      this.ctx.shadowBlur = 12;
-      this.ctx.shadowColor = fencer.color;
-      this.ctx.fillStyle = fencer.color;
-
-      this.ctx.beginPath();
-      this.ctx.arc(x, y, 6, 0, Math.PI * 2);
-      this.ctx.fill();
-
-      // Inner core with slight glow
-      this.ctx.shadowBlur = 6;
-      this.ctx.fillStyle = fencer.color;
-      this.ctx.beginPath();
-      this.ctx.arc(x, y, 4, 0, Math.PI * 2);
-      this.ctx.fill();
-
-      // White center
-      this.ctx.shadowBlur = 0;
+      // White tip dot - slightly larger to match the trail head
       this.ctx.fillStyle = '#ffffff';
       this.ctx.beginPath();
-      this.ctx.arc(x, y, 2, 0, Math.PI * 2);
+      this.ctx.arc(x, y, 3, 0, Math.PI * 2);
       this.ctx.fill();
 
       this.ctx.restore();

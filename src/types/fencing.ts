@@ -16,6 +16,7 @@ export interface Pose {
 export interface TipPosition {
   x: number;        // 0-1 normalized
   y: number;
+  z: number;        // relative depth (negative = closer to camera)
   confidence: number;
   timestamp: number;
   side: 'left' | 'right';  // assigned based on frame position
@@ -26,6 +27,7 @@ export interface TipPosition {
 export interface TrailPoint {
   x: number;
   y: number;
+  z: number;         // relative depth for 3D effects
   timestamp: number;
   velocity: number;  // for heatmap mode
   opacity: number;   // for smooth fade out (0-1)

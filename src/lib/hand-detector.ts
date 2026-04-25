@@ -143,6 +143,7 @@ export async function detectHands(
       const tip: TipPosition = {
         x: tipLandmark.x,
         y: tipLandmark.y,
+        z: tipLandmark.z,
         confidence: tipLandmark.visibility,
         timestamp,
         side,

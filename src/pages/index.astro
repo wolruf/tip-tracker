@@ -179,7 +179,7 @@ import Layout from '../layouts/Layout.astro';
     resizeCanvas();
     trailRenderer.resize();
     debugRenderer.resize();
-    
+
     // Handle window resize
     window.addEventListener('resize', () => {
       resizeCanvas();
@@ -192,6 +192,9 @@ import Layout from '../layouts/Layout.astro';
 
     // Initialize detector with default mode (hand)
     await initializeDetector();
+
+    // Start camera automatically
+    await startCamera();
   }
 
   function resizeCanvas() {
@@ -292,46 +295,54 @@ import Layout from '../layouts/Layout.astro';
     toggleCameraBtn.addEventListener('click', toggleCamera);
   }
 
+  async function startCamera(): Promise<void> {
+    if (isCameraRunning) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user'
+        },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      isCameraRunning = true;
+      toggleCameraBtn.textContent = 'Stop Camera';
+      detectionStatus.textContent = isDetectorReady ? 'Running' : 'Loading model...';
+
+      // Start the main loop if not already running
+      const hasActiveTrails = Array.from(trailManager.getFencers().values())
+        .some(f => f.trail.length > 0);
+      if (!hasActiveTrails) {
+        requestAnimationFrame(loop);
+      }
+    } catch (err) {
+      console.error('Failed to access camera:', err);
+      detectionStatus.textContent = 'Camera access denied';
+    }
+  }
+
+  async function stopCamera(): Promise<void> {
+    if (!isCameraRunning) return;
+
+    const stream = video.srcObject as MediaStream;
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+    }
+    video.srcObject = null;
+    isCameraRunning = false;
+    toggleCameraBtn.textContent = 'Start Camera';
+    detectionStatus.textContent = isDetectorReady ? 'Ready' : 'Loading model...';
+  }
+
   async function toggleCamera() {
     if (isCameraRunning) {
-      // Stop camera
-      const stream = video.srcObject as MediaStream;
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-      video.srcObject = null;
-      isCameraRunning = false;
-      toggleCameraBtn.textContent = 'Start Camera';
-      detectionStatus.textContent = isDetectorReady ? 'Ready' : 'Loading model...';
-
-      // Loop will continue automatically to fade out trails
+      await stopCamera();
     } else {
-      // Start camera
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user'
-          },
-          audio: false
-        });
-        video.srcObject = stream;
-        await video.play();
-        isCameraRunning = true;
-        toggleCameraBtn.textContent = 'Stop Camera';
-        detectionStatus.textContent = isDetectorReady ? 'Running' : 'Loading model...';
-
-        // Start the main loop if not already running
-        const hasActiveTrails = Array.from(trailManager.getFencers().values())
-          .some(f => f.trail.length > 0);
-        if (!hasActiveTrails) {
-          requestAnimationFrame(loop);
-        }
-      } catch (err) {
-        console.error('Failed to access camera:', err);
-        detectionStatus.textContent = 'Camera access denied';
-      }
+      await startCamera();
     }
   }
 

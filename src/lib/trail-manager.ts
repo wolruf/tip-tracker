@@ -169,6 +169,7 @@ export class TrailManager {
       fencer.trail.push({
         x: tip.x,
         y: tip.y,
+        z: tip.z,
         timestamp,
         velocity,
         opacity: 1.0,
