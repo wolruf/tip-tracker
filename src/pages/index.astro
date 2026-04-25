@@ -120,19 +120,20 @@ import Layout from '../layouts/Layout.astro';
 
 <script>
   // Import modules
-  import { 
-    initDetector, 
-    detect, 
-    getTrackingMode, 
-    setTrackingMode, 
+  import {
+    initDetector,
+    detect,
+    getTrackingMode,
+    setTrackingMode,
     isDetectorInitialized as checkDetectorInit,
     resetCurrentDetector,
     POSE_LANDMARKS,
     HAND_LANDMARKS,
-    HAND_CONNECTIONS 
+    HAND_CONNECTIONS
   } from '../lib/unified-detector';
   import { TrailManager } from '../lib/trail-manager';
   import { TrailRenderer, DebugRenderer } from '../lib/renderer';
+  import { EffectManager, FlashEffect, ExplosionEffect } from '../lib/effects';
   import type { DebugMode, EffectMode, TrackingMode, DetectionResult } from '../types/fencing';
 
   // DOM Elements
@@ -173,6 +174,12 @@ import Layout from '../layouts/Layout.astro';
   const trailManager = new TrailManager({ maxLength: 30 });
   const trailRenderer = new TrailRenderer(overlay);
   const debugRenderer = new DebugRenderer(overlay);
+  const effectManager = new EffectManager(overlay.getContext('2d')!);
+
+  // Clash detection
+  let lastClashTime = 0;
+  const CLASH_COOLDOWN = 1000; // Minimum ms between clash effects
+  const CLASH_DISTANCE = 0.03; // Normalized distance (3% of screen) - must be very close to trigger
 
   // Initialize
   async function init() {
@@ -363,6 +370,21 @@ import Layout from '../layouts/Layout.astro';
           currentDetections = await detect(video, timestamp);
           const tips = new Map(currentDetections.map(d => [d.id, d.tip]));
           trailManager.updateTips(tips, timestamp);
+
+          // Check for clash (tips close together)
+          if (currentDetections.length >= 2) {
+            const tip1 = currentDetections[0].tip;
+            const tip2 = currentDetections[1].tip;
+            const dx = tip1.x - tip2.x;
+            const dy = tip1.y - tip2.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < CLASH_DISTANCE && timestamp - lastClashTime > CLASH_COOLDOWN) {
+              // Trigger flash effect
+              effectManager.addEffect(new FlashEffect(1600));
+              lastClashTime = timestamp;
+            }
+          }
         } catch (err) {
           console.error('Detection error:', err);
         }
@@ -389,8 +411,13 @@ import Layout from '../layouts/Layout.astro';
   }
 
   function render(timestamp: number) {
-    // Clear canvas
+    // Clear canvas (but preserve effects which draw on top)
     trailRenderer.clear();
+
+    // Continue fading trails even when camera is off
+    if (!isCameraRunning) {
+      trailManager.fadeAllTrails();
+    }
 
     const fencers = trailManager.getFencers();
 
@@ -559,6 +586,9 @@ import Layout from '../layouts/Layout.astro';
         trailRenderer.renderTipDots(fencers);
         break;
     }
+
+    // Render any active effects on top
+    effectManager.updateAndRender(timestamp, overlay.width, overlay.height);
   }
 
   // Start initialization
