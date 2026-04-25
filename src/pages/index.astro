@@ -1,11 +1,817 @@
 ---
-import Welcome from '../components/Welcome.astro';
 import Layout from '../layouts/Layout.astro';
-
-// Welcome to Astro! Wondering what to do next? Check out the Astro documentation at https://docs.astro.build
-// Don't want to use any of this? Delete everything in this file, the `assets`, `components`, and `layouts` directories, and start fresh.
 ---
 
 <Layout>
-	<Welcome />
+  <div id="container">
+    <video 
+      id="video" 
+      class="video-element"
+      autoplay 
+      playsinline 
+      muted
+    ></video>
+    <canvas 
+      id="overlay" 
+      class="overlay-canvas"
+    ></canvas>
+    
+    <!-- Hamburger Menu Toggle -->
+    <button id="menuToggle" aria-label="Toggle menu">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+    
+    <!-- Collapsible Controls Panel -->
+    <div id="controls" class="collapsed">
+      <h1>Tip Track</h1>
+      
+      <div class="control-group">
+        <label for="trackingMode">Tracking Mode</label>
+        <select id="trackingMode">
+          <option value="hand">Hand Tracking (Demo)</option>
+          <option value="pose">Pose Tracking (Full Body)</option>
+        </select>
+        <small class="hint">Hand: index fingertip = sword tip</small>
+      </div>
+
+      <div class="control-group">
+        <label for="debugMode">Debug Mode</label>
+        <select id="debugMode">
+          <option value="none">Production (Trails)</option>
+          <option value="landmarks">Landmarks</option>
+          <option value="skeleton">Skeleton</option>
+          <option value="vectors">Vectors</option>
+          <option value="tips-only">Tip Points</option>
+          <option value="trails-only">Trails Only</option>
+          <option value="lightsaber">Lightsaber</option>
+          <option value="heatmap">Heatmap</option>
+          <option value="all">All Debug</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="trailLength">
+          Trail Length: <span id="trailLengthValue">60</span>
+        </label>
+        <input 
+          type="range" 
+          id="trailLength" 
+          min="10" 
+          max="120" 
+          value="60" 
+          step="10"
+        />
+      </div>
+
+      <div class="control-group">
+        <label for="inferenceRate">
+          Inference Rate: <span id="inferenceRateValue">15</span> fps
+        </label>
+        <input 
+          type="range" 
+          id="inferenceRate" 
+          min="5" 
+          max="30" 
+          value="15" 
+          step="1"
+        />
+      </div>
+
+      <details class="advanced-controls">
+        <summary>Advanced / Effects</summary>
+        <div class="control-group">
+          <label for="effectMode">Effect Mode</label>
+          <select id="effectMode">
+            <option value="none">None</option>
+            <option value="lightsaber-glow">Lightsaber Glow</option>
+            <option value="matrix">Matrix</option>
+            <option value="motion-blur">Motion Blur</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="glowIntensity">
+            Glow Intensity: <span id="glowIntensityValue">1.0</span>
+          </label>
+          <input 
+            type="range" 
+            id="glowIntensity" 
+            min="0" 
+            max="2" 
+            value="1" 
+            step="0.1"
+          />
+        </div>
+      </details>
+
+      <div class="control-group button-group">
+        <button id="clearTrails" class="btn-secondary">Clear Trails</button>
+        <button id="toggleCamera" class="btn-primary">Start Camera</button>
+      </div>
+
+      <div class="status">
+        <span id="detectionStatus">Initializing...</span>
+        <span id="fpsCounter">-- fps</span>
+      </div>
+    </div>
+  </div>
 </Layout>
+
+<script>
+  // Import modules
+  import { 
+    initDetector, 
+    detect, 
+    getTrackingMode, 
+    setTrackingMode, 
+    isDetectorInitialized as checkDetectorInit,
+    resetCurrentDetector,
+    POSE_LANDMARKS,
+    HAND_LANDMARKS,
+    HAND_CONNECTIONS 
+  } from '../lib/unified-detector';
+  import { TrailManager } from '../lib/trail-manager';
+  import { TrailRenderer, DebugRenderer } from '../lib/renderer';
+  import type { DebugMode, EffectMode, TrackingMode, DetectionResult } from '../types/fencing';
+
+  // DOM Elements
+  const video = document.getElementById('video') as HTMLVideoElement;
+  const overlay = document.getElementById('overlay') as HTMLCanvasElement;
+  const menuToggle = document.getElementById('menuToggle') as HTMLButtonElement;
+  const controls = document.getElementById('controls') as HTMLDivElement;
+  const trackingModeSelect = document.getElementById('trackingMode') as HTMLSelectElement;
+  const debugModeSelect = document.getElementById('debugMode') as HTMLSelectElement;
+  const trailLengthInput = document.getElementById('trailLength') as HTMLInputElement;
+  const trailLengthValue = document.getElementById('trailLengthValue') as HTMLSpanElement;
+  const inferenceRateInput = document.getElementById('inferenceRate') as HTMLInputElement;
+  const inferenceRateValue = document.getElementById('inferenceRateValue') as HTMLSpanElement;
+  const glowIntensityInput = document.getElementById('glowIntensity') as HTMLInputElement;
+  const glowIntensityValue = document.getElementById('glowIntensityValue') as HTMLSpanElement;
+  const effectModeSelect = document.getElementById('effectMode') as HTMLSelectElement;
+  const clearTrailsBtn = document.getElementById('clearTrails') as HTMLButtonElement;
+  const toggleCameraBtn = document.getElementById('toggleCamera') as HTMLButtonElement;
+  const detectionStatus = document.getElementById('detectionStatus') as HTMLSpanElement;
+  const fpsCounter = document.getElementById('fpsCounter') as HTMLSpanElement;
+
+  // State
+  let isCameraRunning = false;
+  let isDetectorReady = false;
+  let trackingMode: TrackingMode = 'hand';
+  let debugMode: DebugMode = 'none';
+  let effectMode: EffectMode = 'none';
+  let inferenceFps = 15;
+  let detectionInterval = 1000 / inferenceFps;
+  let lastDetectionTime = 0;
+  let lastRenderTime = 0;
+  let frameCount = 0;
+  let lastFpsTime = 0;
+  let currentDetections: DetectionResult[] = [];
+  let isSwitchingMode = false;
+
+  // Managers
+  const trailManager = new TrailManager({ maxLength: 60 });
+  const trailRenderer = new TrailRenderer(overlay);
+  const debugRenderer = new DebugRenderer(overlay);
+
+  // Initialize
+  async function init() {
+    resizeCanvas();
+    trailRenderer.resize();
+    debugRenderer.resize();
+    
+    // Handle window resize
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      trailRenderer.resize();
+      debugRenderer.resize();
+    });
+
+    // Setup event listeners
+    setupEventListeners();
+
+    // Initialize detector with default mode (hand)
+    await initializeDetector();
+  }
+
+  function resizeCanvas() {
+    overlay.width = window.innerWidth;
+    overlay.height = window.innerHeight;
+  }
+
+  async function initializeDetector() {
+    detectionStatus.textContent = `Loading ${trackingMode} model...`;
+    try {
+      await initDetector(trackingMode, {
+        numTargets: 2,
+        minDetectionConfidence: 0.5,
+        minPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      isDetectorReady = true;
+      detectionStatus.textContent = isCameraRunning ? 'Running' : 'Ready - start camera';
+    } catch (err) {
+      console.error('Failed to initialize detector:', err);
+      detectionStatus.textContent = 'Model failed to load';
+    }
+  }
+
+  function setupEventListeners() {
+    // Menu toggle
+    menuToggle.addEventListener('click', () => {
+      controls.classList.toggle('collapsed');
+    });
+
+    // Close menu when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!controls.contains(e.target as Node) && !menuToggle.contains(e.target as Node)) {
+        controls.classList.add('collapsed');
+      }
+    });
+
+    // Tracking mode switch
+    trackingModeSelect.addEventListener('change', async (e) => {
+      const newMode = (e.target as HTMLSelectElement).value as TrackingMode;
+      if (newMode !== trackingMode && !isSwitchingMode) {
+        isSwitchingMode = true;
+        trackingMode = newMode;
+        
+        // Reset detector
+        isDetectorReady = false;
+        await resetCurrentDetector();
+        trailManager.clear();
+        currentDetections = [];
+        
+        // Reinitialize with new mode
+        await initializeDetector();
+        isSwitchingMode = false;
+      }
+    });
+
+    // Debug mode
+    debugModeSelect.addEventListener('change', (e) => {
+      debugMode = (e.target as HTMLSelectElement).value as DebugMode;
+    });
+
+    // Trail length
+    trailLengthInput.addEventListener('input', (e) => {
+      const value = parseInt((e.target as HTMLInputElement).value);
+      trailLengthValue.textContent = value.toString();
+      trailManager.setConfig({ maxLength: value });
+    });
+
+    // Inference rate
+    inferenceRateInput.addEventListener('input', (e) => {
+      const value = parseInt((e.target as HTMLInputElement).value);
+      inferenceRateValue.textContent = value.toString();
+      inferenceFps = value;
+      detectionInterval = 1000 / inferenceFps;
+    });
+
+    // Glow intensity
+    if (glowIntensityInput) {
+      glowIntensityInput.addEventListener('input', (e) => {
+        const value = parseFloat((e.target as HTMLInputElement).value);
+        glowIntensityValue.textContent = value.toFixed(1);
+      });
+    }
+
+    // Effect mode
+    if (effectModeSelect) {
+      effectModeSelect.addEventListener('change', (e) => {
+        effectMode = (e.target as HTMLSelectElement).value as EffectMode;
+      });
+    }
+
+    // Clear trails
+    clearTrailsBtn.addEventListener('click', () => {
+      trailManager.clear();
+    });
+
+    // Toggle camera
+    toggleCameraBtn.addEventListener('click', toggleCamera);
+  }
+
+  async function toggleCamera() {
+    if (isCameraRunning) {
+      // Stop camera
+      const stream = video.srcObject as MediaStream;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      video.srcObject = null;
+      isCameraRunning = false;
+      toggleCameraBtn.textContent = 'Start Camera';
+      detectionStatus.textContent = isDetectorReady ? 'Ready' : 'Loading model...';
+    } else {
+      // Start camera
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user'
+          },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        isCameraRunning = true;
+        toggleCameraBtn.textContent = 'Stop Camera';
+        detectionStatus.textContent = isDetectorReady ? 'Running' : 'Loading model...';
+        
+        // Start the main loop
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error('Failed to access camera:', err);
+        detectionStatus.textContent = 'Camera access denied';
+      }
+    }
+  }
+
+  // Main loop
+  async function loop(timestamp: number) {
+    if (!isCameraRunning) return;
+
+    // Calculate FPS
+    frameCount++;
+    if (timestamp - lastFpsTime >= 1000) {
+      fpsCounter.textContent = `${frameCount} fps`;
+      frameCount = 0;
+      lastFpsTime = timestamp;
+    }
+
+    // Detection (throttled)
+    if (timestamp - lastDetectionTime >= detectionInterval) {
+      if (isDetectorReady && video.readyState >= 2) {
+        try {
+          currentDetections = await detect(video, timestamp);
+          const tips = new Map(currentDetections.map(d => [d.id, d.tip]));
+          trailManager.updateTips(tips, timestamp);
+        } catch (err) {
+          console.error('Detection error:', err);
+        }
+      }
+      lastDetectionTime = timestamp;
+    }
+
+    // Rendering (60fps)
+    render(timestamp);
+
+    lastRenderTime = timestamp;
+    requestAnimationFrame(loop);
+  }
+
+  function render(timestamp: number) {
+    // Clear canvas
+    trailRenderer.clear();
+
+    const fencers = trailManager.getFencers();
+
+    // Render based on debug mode
+    switch (debugMode) {
+      case 'none':
+        trailRenderer.renderTrails(fencers);
+        trailRenderer.renderTips(fencers);
+        break;
+
+      case 'landmarks':
+        if (trackingMode === 'pose') {
+          currentDetections.forEach(detection => {
+            debugRenderer.renderLandmarks(detection.landmarks);
+          });
+        } else {
+          currentDetections.forEach(detection => {
+            debugRenderer.renderLandmarks(detection.landmarks, '#00ffff');
+          });
+        }
+        break;
+
+      case 'skeleton':
+        if (trackingMode === 'pose') {
+          currentDetections.forEach(detection => {
+            debugRenderer.renderSkeleton(detection.landmarks);
+          });
+        } else {
+          const width = overlay.width;
+          const height = overlay.height;
+          const ctx = overlay.getContext('2d')!;
+          
+          ctx.save();
+          ctx.strokeStyle = '#00ffff';
+          ctx.lineWidth = 2;
+          
+          currentDetections.forEach(detection => {
+            const lm = detection.landmarks;
+            HAND_CONNECTIONS.forEach(([start, end]) => {
+              if (lm[start]?.visibility > 0.5 && lm[end]?.visibility > 0.5) {
+                ctx.beginPath();
+                ctx.moveTo(lm[start].x * width, lm[start].y * height);
+                ctx.lineTo(lm[end].x * width, lm[end].y * height);
+                ctx.stroke();
+              }
+            });
+          });
+          ctx.restore();
+        }
+        break;
+
+      case 'vectors':
+        if (trackingMode === 'pose') {
+          currentDetections.forEach(detection => {
+            const lm = detection.landmarks;
+            const wrist = lm[POSE_LANDMARKS.RIGHT_WRIST];
+            const elbow = lm[POSE_LANDMARKS.RIGHT_ELBOW];
+            if (wrist && elbow && detection.tip) {
+              const fencer = fencers.get(detection.id);
+              if (fencer) {
+                debugRenderer.renderVectors(wrist, elbow, detection.tip, fencer.color);
+              }
+            }
+          });
+        } else {
+          const width = overlay.width;
+          const height = overlay.height;
+          const ctx = overlay.getContext('2d')!;
+          
+          ctx.save();
+          currentDetections.forEach(detection => {
+            const lm = detection.landmarks;
+            const wrist = lm[HAND_LANDMARKS.WRIST];
+            const indexMcp = lm[HAND_LANDMARKS.INDEX_FINGER_MCP];
+            const tip = lm[HAND_LANDMARKS.INDEX_FINGER_TIP];
+            const fencer = fencers.get(detection.id);
+            
+            if (wrist && indexMcp && tip && fencer) {
+              ctx.strokeStyle = '#ffff00';
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.moveTo(wrist.x * width, wrist.y * height);
+              ctx.lineTo(indexMcp.x * width, indexMcp.y * height);
+              ctx.stroke();
+              
+              ctx.strokeStyle = fencer.color;
+              ctx.setLineDash([5, 5]);
+              ctx.beginPath();
+              ctx.moveTo(indexMcp.x * width, indexMcp.y * height);
+              ctx.lineTo(tip.x * width, tip.y * height);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              
+              ctx.fillStyle = fencer.color;
+              ctx.beginPath();
+              ctx.arc(tip.x * width, tip.y * height, 6, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          });
+          ctx.restore();
+        }
+        break;
+
+      case 'tips-only':
+        trailRenderer.renderTips(fencers);
+        break;
+
+      case 'trails-only':
+        trailRenderer.renderTrailsOnly(fencers);
+        break;
+
+      case 'lightsaber':
+        currentDetections.forEach(detection => {
+          const fencer = fencers.get(detection.id);
+          if (!fencer) return;
+          
+          if (trackingMode === 'pose') {
+            const wrist = detection.landmarks[POSE_LANDMARKS.RIGHT_WRIST];
+            if (wrist && detection.tip) {
+              debugRenderer.renderLightsaber(wrist, detection.tip, fencer.color);
+            }
+          } else {
+            const wrist = detection.landmarks[HAND_LANDMARKS.WRIST];
+            if (wrist && detection.tip) {
+              debugRenderer.renderLightsaber(wrist, detection.tip, fencer.color);
+            }
+          }
+        });
+        break;
+
+      case 'heatmap':
+        trailRenderer.renderTrails(fencers);
+        break;
+
+      case 'all':
+        if (trackingMode === 'pose') {
+          currentDetections.forEach(detection => {
+            debugRenderer.renderLandmarks(detection.landmarks);
+            debugRenderer.renderSkeleton(detection.landmarks);
+          });
+        } else {
+          currentDetections.forEach(detection => {
+            debugRenderer.renderLandmarks(detection.landmarks, '#00ffff');
+          });
+          
+          const width = overlay.width;
+          const height = overlay.height;
+          const ctx = overlay.getContext('2d')!;
+          ctx.save();
+          ctx.strokeStyle = '#00ffff';
+          ctx.lineWidth = 2;
+          currentDetections.forEach(detection => {
+            const lm = detection.landmarks;
+            HAND_CONNECTIONS.forEach(([start, end]) => {
+              if (lm[start]?.visibility > 0.5 && lm[end]?.visibility > 0.5) {
+                ctx.beginPath();
+                ctx.moveTo(lm[start].x * width, lm[start].y * height);
+                ctx.lineTo(lm[end].x * width, lm[end].y * height);
+                ctx.stroke();
+              }
+            });
+          });
+          ctx.restore();
+        }
+        trailRenderer.renderTrails(fencers);
+        trailRenderer.renderTips(fencers);
+        break;
+    }
+  }
+
+  // Start initialization
+  init();
+</script>
+
+<style>
+  #container {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #000;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .video-element {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+  }
+
+  .overlay-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    transform: scaleX(-1);
+  }
+
+  /* Hamburger Menu Toggle */
+  #menuToggle {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 50px;
+    height: 50px;
+    background: rgba(0, 0, 0, 0.7);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    z-index: 1001;
+    transition: background 0.3s ease;
+  }
+
+  #menuToggle:hover {
+    background: rgba(0, 0, 0, 0.85);
+  }
+
+  #menuToggle span {
+    width: 30px;
+    height: 3px;
+    background: white;
+    border-radius: 2px;
+    transition: all 0.3s ease;
+  }
+
+  /* Controls Panel */
+  #controls {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(10px);
+    padding: 25px;
+    border-radius: 12px;
+    color: white;
+    min-width: 280px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    z-index: 1000;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  #controls.collapsed {
+    transform: translateX(calc(100% + 40px));
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  h1 {
+    margin: 35px 0 20px 0;
+    font-size: 1.75rem;
+    font-weight: 600;
+    text-align: center;
+    color: white;
+  }
+
+  .control-group {
+    margin-bottom: 18px;
+  }
+
+  .control-group:last-child {
+    margin-bottom: 0;
+  }
+
+  label {
+    display: block;
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin-bottom: 6px;
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  select, input[type="range"] {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    font-size: 0.9rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  select:focus, input:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  select option {
+    background: #1a1a1a;
+    color: white;
+  }
+
+  input[type="range"] {
+    padding: 0;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: white;
+    cursor: pointer;
+    transition: transform 0.2s ease;
+  }
+
+  input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.1);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: white;
+    cursor: pointer;
+    border: none;
+  }
+
+  .hint {
+    display: block;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.5);
+    margin-top: 4px;
+    font-style: italic;
+  }
+
+  .advanced-controls {
+    margin: 15px 0;
+    padding: 10px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .advanced-controls summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.6);
+    user-select: none;
+    transition: color 0.2s ease;
+  }
+
+  .advanced-controls summary:hover {
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .advanced-controls[open] summary {
+    margin-bottom: 15px;
+  }
+
+  .button-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  button {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    font-size: 0.95rem;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .btn-primary {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.3);
+    color: white;
+  }
+
+  .btn-primary:hover {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: translateY(-1px);
+  }
+
+  .btn-secondary {
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+
+  .status {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 18px;
+    padding-top: 15px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  #fpsCounter {
+    font-family: monospace;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  /* Scrollbar styling for controls panel */
+  #controls::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  #controls::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+  }
+
+  #controls::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+  }
+
+  #controls::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+</style>
