@@ -53,15 +53,15 @@ import Layout from '../layouts/Layout.astro';
 
       <div class="control-group">
         <label for="trailLength">
-          Trail Length: <span id="trailLengthValue">60</span>
+          Trail Length: <span id="trailLengthValue">30</span>
         </label>
-        <input 
-          type="range" 
-          id="trailLength" 
-          min="10" 
-          max="120" 
-          value="60" 
-          step="10"
+        <input
+          type="range"
+          id="trailLength"
+          min="5"
+          max="60"
+          value="30"
+          step="5"
         />
       </div>
 
@@ -170,7 +170,7 @@ import Layout from '../layouts/Layout.astro';
   let isSwitchingMode = false;
 
   // Managers
-  const trailManager = new TrailManager({ maxLength: 60 });
+  const trailManager = new TrailManager({ maxLength: 30 });
   const trailRenderer = new TrailRenderer(overlay);
   const debugRenderer = new DebugRenderer(overlay);
 
@@ -303,11 +303,13 @@ import Layout from '../layouts/Layout.astro';
       isCameraRunning = false;
       toggleCameraBtn.textContent = 'Start Camera';
       detectionStatus.textContent = isDetectorReady ? 'Ready' : 'Loading model...';
+
+      // Loop will continue automatically to fade out trails
     } else {
       // Start camera
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { 
+          video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
             facingMode: 'user'
@@ -319,9 +321,13 @@ import Layout from '../layouts/Layout.astro';
         isCameraRunning = true;
         toggleCameraBtn.textContent = 'Stop Camera';
         detectionStatus.textContent = isDetectorReady ? 'Running' : 'Loading model...';
-        
-        // Start the main loop
-        requestAnimationFrame(loop);
+
+        // Start the main loop if not already running
+        const hasActiveTrails = Array.from(trailManager.getFencers().values())
+          .some(f => f.trail.length > 0);
+        if (!hasActiveTrails) {
+          requestAnimationFrame(loop);
+        }
       } catch (err) {
         console.error('Failed to access camera:', err);
         detectionStatus.textContent = 'Camera access denied';
@@ -331,8 +337,6 @@ import Layout from '../layouts/Layout.astro';
 
   // Main loop
   async function loop(timestamp: number) {
-    if (!isCameraRunning) return;
-
     // Calculate FPS
     frameCount++;
     if (timestamp - lastFpsTime >= 1000) {
@@ -341,8 +345,8 @@ import Layout from '../layouts/Layout.astro';
       lastFpsTime = timestamp;
     }
 
-    // Detection (throttled)
-    if (timestamp - lastDetectionTime >= detectionInterval) {
+    // Detection (throttled, only when camera is running)
+    if (isCameraRunning && timestamp - lastDetectionTime >= detectionInterval) {
       if (isDetectorReady && video.readyState >= 2) {
         try {
           currentDetections = await detect(video, timestamp);
@@ -355,11 +359,22 @@ import Layout from '../layouts/Layout.astro';
       lastDetectionTime = timestamp;
     }
 
-    // Rendering (60fps)
+    // If camera is off, fade trails gradually
+    if (!isCameraRunning) {
+      trailManager.fadeAllTrails();
+    }
+
+    // Rendering (60fps) - always render to show fading trails
     render(timestamp);
 
-    lastRenderTime = timestamp;
-    requestAnimationFrame(loop);
+    // Continue loop if camera is running OR if trails are still visible
+    const hasActiveTrails = Array.from(trailManager.getFencers().values())
+      .some(f => f.trail.length > 0);
+
+    if (isCameraRunning || hasActiveTrails) {
+      lastRenderTime = timestamp;
+      requestAnimationFrame(loop);
+    }
   }
 
   function render(timestamp: number) {
@@ -372,7 +387,7 @@ import Layout from '../layouts/Layout.astro';
     switch (debugMode) {
       case 'none':
         trailRenderer.renderTrails(fencers);
-        trailRenderer.renderTips(fencers);
+        trailRenderer.renderTipDots(fencers);
         break;
 
       case 'landmarks':
@@ -469,7 +484,7 @@ import Layout from '../layouts/Layout.astro';
         break;
 
       case 'tips-only':
-        trailRenderer.renderTips(fencers);
+        trailRenderer.renderTipDots(fencers);
         break;
 
       case 'trails-only':
@@ -530,7 +545,7 @@ import Layout from '../layouts/Layout.astro';
           ctx.restore();
         }
         trailRenderer.renderTrails(fencers);
-        trailRenderer.renderTips(fencers);
+        trailRenderer.renderTipDots(fencers);
         break;
     }
   }

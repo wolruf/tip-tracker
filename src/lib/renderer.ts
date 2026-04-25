@@ -44,7 +44,40 @@ export class TrailRenderer {
   }
 
   /**
-   * Render a single neon trail
+   * Calculate control points for cubic bezier spline
+   * Uses standard Catmull-Rom to cubic bezier conversion
+   * Ensures C1 continuity (smooth curves) between segments
+   */
+  private getControlPoints(
+    p0: TrailPoint,
+    p1: TrailPoint,
+    p2: TrailPoint,
+    p3: TrailPoint,
+    width: number,
+    height: number,
+    tension: number = 0.5
+  ): { cp1x: number; cp1y: number; cp2x: number; cp2y: number } {
+    // Convert normalized coordinates to canvas coordinates
+    const x0 = p0.x * width, y0 = p0.y * height;
+    const x1 = p1.x * width, y1 = p1.y * height;
+    const x2 = p2.x * width, y2 = p2.y * height;
+    const x3 = p3.x * width, y3 = p3.y * height;
+
+    // Standard Catmull-Rom to cubic bezier conversion
+    // This ensures C1 continuity (smooth tangent) at segment joints
+    // cp1 = p1 + (p2 - p0) / 6 * tension
+    // cp2 = p2 - (p3 - p1) / 6 * tension
+    const cp1x = x1 + (x2 - x0) / 6 * tension;
+    const cp1y = y1 + (y2 - y0) / 6 * tension;
+    const cp2x = x2 - (x3 - x1) / 6 * tension;
+    const cp2y = y2 - (y3 - y1) / 6 * tension;
+
+    return { cp1x, cp1y, cp2x, cp2y };
+  }
+
+  /**
+   * Render a single neon trail using cubic splines
+   * Draws smooth curves with per-segment opacity gradients
    */
   private renderNeonTrail(trail: TrailPoint[], color: string): void {
     if (trail.length < 2) return;
@@ -52,46 +85,118 @@ export class TrailRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
 
-    this.ctx.save();
+    // Pre-calculate all canvas coordinates and control points
+    const points: { x: number; y: number }[] = [];
+    const controlPoints: { cp1x: number; cp1y: number; cp2x: number; cp2y: number }[] = [];
+    const opacities: number[] = [];
 
-    // Draw outer glow
-    this.ctx.shadowBlur = 20;
-    this.ctx.shadowColor = color;
-    this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = 6;
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
+    for (let i = 0; i < trail.length; i++) {
+      points.push({
+        x: trail[i].x * width,
+        y: trail[i].y * height
+      });
 
-    this.ctx.beginPath();
-    this.ctx.moveTo(trail[0].x * width, trail[0].y * height);
+      const progress = i / (trail.length - 1);
+      opacities.push(smoothstep(0, 1, progress) * trail[i].opacity);
 
-    for (let i = 1; i < trail.length; i++) {
-      this.ctx.lineTo(trail[i].x * width, trail[i].y * height);
+      // Calculate control points for segment starting at this point
+      if (i < trail.length - 1) {
+        const cp = this.getControlPoints(
+          trail[Math.max(0, i - 1)],
+          trail[i],
+          trail[i + 1],
+          trail[Math.min(trail.length - 1, i + 2)],
+          width, height, 1.2
+        );
+        controlPoints.push(cp);
+      }
     }
 
-    this.ctx.globalAlpha = 0.3;
-    this.ctx.stroke();
+    // Draw in small batches for both smoothness and opacity control
+    // Each batch is a continuous curve with smooth opacity transition
+    const batchSize = 4; // Draw 4 segments at a time for smoothness
 
-    // Draw middle glow
-    this.ctx.shadowBlur = 10;
-    this.ctx.lineWidth = 4;
-    this.ctx.globalAlpha = 0.6;
-    this.ctx.stroke();
+    for (let batchStart = 0; batchStart < points.length - 1; batchStart += batchSize) {
+      const batchEnd = Math.min(batchStart + batchSize, points.length - 1);
 
-    // Draw core line
-    this.ctx.shadowBlur = 0;
-    this.ctx.lineWidth = 2;
-    this.ctx.globalAlpha = 1.0;
-    this.ctx.strokeStyle = '#ffffff';
-    this.ctx.stroke();
+      // Outer glow
+      this.drawCurveBatch(points, controlPoints, opacities, batchStart, batchEnd, color, 16, 20, 0.25);
+      // Middle glow
+      this.drawCurveBatch(points, controlPoints, opacities, batchStart, batchEnd, color, 10, 10, 0.5);
+      // Inner core
+      this.drawCurveBatch(points, controlPoints, opacities, batchStart, batchEnd, color, 4, 0, 0.9);
+    }
 
+    // White core at the head (last few segments)
+    const whiteStart = Math.max(0, points.length - 5);
+    this.drawCurveBatch(points, controlPoints, opacities, whiteStart, points.length - 1, '#ffffff', 2, 0, 1.0);
+  }
+
+  /**
+   * Draw a batch of curve segments as one continuous path
+   */
+  private drawCurveBatch(
+    points: { x: number; y: number }[],
+    controlPoints: { cp1x: number; cp1y: number; cp2x: number; cp2y: number }[],
+    opacities: number[],
+    startIdx: number,
+    endIdx: number,
+    color: string,
+    lineWidth: number,
+    shadowBlur: number,
+    baseAlpha: number
+  ): void {
+    if (startIdx >= endIdx || startIdx >= points.length - 1) return;
+
+    // Calculate gradient from start to end of this batch
+    const alpha1 = opacities[startIdx] * baseAlpha;
+    const alpha2 = opacities[endIdx] * baseAlpha;
+
+    // Create gradient aligned with the batch direction
+    const gradient = this.ctx.createLinearGradient(
+      points[startIdx].x, points[startIdx].y,
+      points[endIdx].x, points[endIdx].y
+    );
+    gradient.addColorStop(0, this.colorWithAlpha(color, alpha1));
+    gradient.addColorStop(1, this.colorWithAlpha(color, alpha2));
+
+    this.ctx.save();
+    this.ctx.strokeStyle = gradient;
+    this.ctx.lineWidth = lineWidth;
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    this.ctx.shadowBlur = shadowBlur;
+    this.ctx.shadowColor = color;
+    this.ctx.globalAlpha = 1; // Use gradient alpha
+
+    // Draw continuous curve through this batch
+    this.ctx.beginPath();
+    this.ctx.moveTo(points[startIdx].x, points[startIdx].y);
+
+    for (let i = startIdx; i < endIdx && i < controlPoints.length; i++) {
+      const cp = controlPoints[i];
+      const p2 = points[i + 1];
+      this.ctx.bezierCurveTo(cp.cp1x, cp.cp1y, cp.cp2x, cp.cp2y, p2.x, p2.y);
+    }
+
+    this.ctx.stroke();
     this.ctx.restore();
   }
 
   /**
-   * Render current tip positions
+   * Convert color to rgba string with alpha
    */
-  renderTips(fencers: Map<string, Fencer>): void {
+  private colorWithAlpha(color: string, alpha: number): string {
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  /**
+   * Render a glowing dot at the head (latest point) of each trail
+   */
+  renderTipDots(fencers: Map<string, Fencer>): void {
     const width = this.canvas.width;
     const height = this.canvas.height;
 
@@ -104,19 +209,26 @@ export class TrailRenderer {
       this.ctx.save();
 
       // Outer glow
-      this.ctx.shadowBlur = 15;
+      this.ctx.shadowBlur = 12;
       this.ctx.shadowColor = fencer.color;
       this.ctx.fillStyle = fencer.color;
 
       this.ctx.beginPath();
-      this.ctx.arc(x, y, 8, 0, Math.PI * 2);
+      this.ctx.arc(x, y, 6, 0, Math.PI * 2);
       this.ctx.fill();
 
-      // Inner core
+      // Inner core with slight glow
+      this.ctx.shadowBlur = 6;
+      this.ctx.fillStyle = fencer.color;
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, 4, 0, Math.PI * 2);
+      this.ctx.fill();
+
+      // White center
       this.ctx.shadowBlur = 0;
       this.ctx.fillStyle = '#ffffff';
       this.ctx.beginPath();
-      this.ctx.arc(x, y, 4, 0, Math.PI * 2);
+      this.ctx.arc(x, y, 2, 0, Math.PI * 2);
       this.ctx.fill();
 
       this.ctx.restore();
@@ -131,6 +243,15 @@ export class TrailRenderer {
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     this.renderTrails(fencers);
   }
+}
+
+/**
+ * Smoothstep function for smooth interpolation
+ * Returns 0 when x <= edge0, 1 when x >= edge1, smooth transition in between
+ */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }
 
 export class DebugRenderer {

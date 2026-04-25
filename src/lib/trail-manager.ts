@@ -5,11 +5,14 @@ import type { Fencer, TrailPoint, TipPosition, TrailConfig } from '../types/fenc
 
 // Default configuration
 export const DEFAULT_TRAIL_CONFIG: TrailConfig = {
-  maxLength: 60,
+  maxLength: 30,
   fadeMode: 'linear',
   glowIntensity: 1.0,
-  lineWidth: 3,
+  lineWidth: 6,
 };
+
+// Fade speed: how quickly trails fade out when no new detections (opacity per frame at 60fps)
+const FADE_SPEED = 0.02;
 
 export class TrailManager {
   private fencers: Map<string, Fencer>;
@@ -19,45 +22,138 @@ export class TrailManager {
 
   constructor(config: Partial<TrailConfig> = {}) {
     this.config = { ...DEFAULT_TRAIL_CONFIG, ...config };
-    
+
     // Initialize fencers
     this.fencers = new Map([
-      ['A', { 
-        id: 'A', 
-        side: 'left', 
+      ['A', {
+        id: 'A',
+        side: 'left',
         color: '#00ff00', // green
-        tip: null, 
-        trail: [] 
+        tip: null,
+        trail: []
       }],
-      ['B', { 
-        id: 'B', 
-        side: 'right', 
+      ['B', {
+        id: 'B',
+        side: 'right',
         color: '#ff0000', // red
-        tip: null, 
-        trail: [] 
+        tip: null,
+        trail: []
       }],
     ]);
+  }
+
+  // Distance threshold for matching detections to existing fencers (normalized coords)
+  private static readonly PROXIMITY_THRESHOLD = 0.3; // 30% of screen width/height
+
+  /**
+   * Assign detections to fencers using proximity-based tracking
+   * Existing fencers "stick" to their identity even if they cross sides
+   * Only uses position-based assignment for new/unmatched detections
+   */
+  private assignFencersByProximity(
+    detections: Map<string, TipPosition>
+  ): Map<string, TipPosition> {
+    const assigned = new Map<string, TipPosition>();
+    const unassigned = new Map(detections);
+
+    // Get last known positions for each fencer
+    const lastPositions = new Map<string, TipPosition>();
+    this.fencers.forEach((fencer, id) => {
+      if (fencer.tip) {
+        lastPositions.set(id, fencer.tip);
+      } else if (fencer.trail.length > 0) {
+        // Use most recent trail point if no current tip
+        const lastPoint = fencer.trail[fencer.trail.length - 1];
+        lastPositions.set(id, {
+          x: lastPoint.x,
+          y: lastPoint.y,
+          confidence: 1,
+          timestamp: lastPoint.timestamp,
+          side: fencer.side,
+        });
+      }
+    });
+
+    // First pass: match detections to existing fencers by proximity
+    const matchedDetections = new Set<string>();
+    const matchedFencers = new Set<string>();
+
+    lastPositions.forEach((lastPos, fencerId) => {
+      let bestMatch: string | null = null;
+      let bestDistance = Infinity;
+
+      unassigned.forEach((detection, detectionId) => {
+        const dx = detection.x - lastPos.x;
+        const dy = detection.y - lastPos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < TrailManager.PROXIMITY_THRESHOLD && distance < bestDistance) {
+          bestDistance = distance;
+          bestMatch = detectionId;
+        }
+      });
+
+      if (bestMatch) {
+        const detection = unassigned.get(bestMatch)!;
+        assigned.set(fencerId, detection);
+        matchedDetections.add(bestMatch);
+        matchedFencers.add(fencerId);
+        unassigned.delete(bestMatch);
+      }
+    });
+
+    // Second pass: assign remaining detections by position (new fencers)
+    const remaining = Array.from(unassigned.values());
+    remaining.sort((a, b) => a.x - b.x);
+
+    remaining.forEach((detection, index) => {
+      // Determine target based on position and availability
+      const onLeft = detection.x < 0.5;
+      const aAvailable = !assigned.has('A');
+      const bAvailable = !assigned.has('B');
+
+      if (onLeft && aAvailable) {
+        assigned.set('A', detection);
+      } else if (!onLeft && bAvailable) {
+        assigned.set('B', detection);
+      } else if (aAvailable) {
+        assigned.set('A', detection);
+      } else if (bAvailable) {
+        assigned.set('B', detection);
+      }
+    });
+
+    return assigned;
   }
 
   /**
    * Update tip positions from detection
    * Call this when new pose detection results arrive
+   * Uses proximity tracking to maintain fencer identity across frames
    */
-  updateTips(tips: Map<string, TipPosition>, timestamp: number): void {
+  updateTips(detections: Map<string, TipPosition>, timestamp: number): void {
     this.lastDetectionTime = timestamp;
-    
-    tips.forEach((tip, id) => {
-      const fencer = this.fencers.get(id);
+
+    // Assign detections to fencers using proximity-based tracking
+    const assigned = this.assignFencersByProximity(detections);
+
+    // Track which fencers received new points this frame
+    const updatedFencers = new Set<string>();
+
+    assigned.forEach((tip, fencerId) => {
+      const fencer = this.fencers.get(fencerId);
       if (!fencer) return;
 
+      updatedFencers.add(fencerId);
+
       // Store previous tip for interpolation
-      const prevTip = this.lastTips.get(id);
+      const prevTip = this.lastTips.get(fencerId);
       if (prevTip) {
         tip.prevX = prevTip.x;
         tip.prevY = prevTip.y;
       }
-      
-      this.lastTips.set(id, tip);
+
+      this.lastTips.set(fencerId, tip);
       fencer.tip = tip;
 
       // Calculate velocity for heatmap mode
@@ -69,12 +165,13 @@ export class TrailManager {
         velocity = dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt * 1000 : 0;
       }
 
-      // Add to trail buffer
+      // Add to trail buffer with full opacity
       fencer.trail.push({
         x: tip.x,
         y: tip.y,
         timestamp,
         velocity,
+        opacity: 1.0,
       });
 
       // Trim to max length (ring buffer behavior)
@@ -85,11 +182,27 @@ export class TrailManager {
 
     // Fade trails for fencers not detected in this frame
     this.fencers.forEach((fencer, id) => {
-      if (!tips.has(id)) {
+      if (!updatedFencers.has(id)) {
         fencer.tip = null;
-        // Optionally fade out trail over time
-        // For now, we keep the trail but don't add new points
+        // Gradually fade out the trail points
+        fencer.trail = fencer.trail.filter(point => {
+          point.opacity -= FADE_SPEED;
+          return point.opacity > 0;
+        });
       }
+    });
+  }
+
+  /**
+   * Continue fading trails even when camera is off (call this in render loop)
+   */
+  fadeAllTrails(): void {
+    this.fencers.forEach((fencer) => {
+      fencer.tip = null;
+      fencer.trail = fencer.trail.filter(point => {
+        point.opacity -= FADE_SPEED;
+        return point.opacity > 0;
+      });
     });
   }
 
@@ -163,7 +276,7 @@ export class TrailManager {
    */
   setConfig(config: Partial<TrailConfig>): void {
     this.config = { ...this.config, ...config };
-    
+
     // Trim existing trails if maxLength decreased
     this.fencers.forEach(fencer => {
       if (fencer.trail.length > this.config.maxLength) {

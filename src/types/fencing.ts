@@ -28,6 +28,7 @@ export interface TrailPoint {
   y: number;
   timestamp: number;
   velocity: number;  // for heatmap mode
+  opacity: number;   // for smooth fade out (0-1)
 }
 
 export interface Fencer {

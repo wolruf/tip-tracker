@@ -1,8 +1,9 @@
 # Tip Track - Session Resumption Document
 
 **Created**: April 24, 2026  
-**Updated**: April 24, 2026 (UI refresh: fullscreen + collapsible menu)  
-**Status**: Phase 1 + Hand Tracking + UI Polish COMPLETE ✅  
+**Updated**: April 24, 2026 (project renamed, pushed to GitHub)  
+**Status**: Phase 1 + Hand Tracking + UI Polish + GitHub ✅  
+**GitHub**: https://github.com/willi/tip-track  
 **Next Step**: Testing & refinement, or Phase 2 features
 
 ---
