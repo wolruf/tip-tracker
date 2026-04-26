@@ -42,7 +42,7 @@ import Layout from '../layouts/Layout.astro';
           <option value="none">Production (Trails)</option>
           <option value="landmarks">Landmarks</option>
           <option value="skeleton">Skeleton</option>
-          <option value="vectors">Vectors</option>
+          <option value="vectors">Vectors + Grid</option>
           <option value="tips-only">Tip Points</option>
           <option value="trails-only">Trails Only</option>
           <option value="lightsaber">Lightsaber</option>
@@ -175,6 +175,12 @@ import Layout from '../layouts/Layout.astro';
   const debugRenderer = new DebugRenderer(overlay);
   const effectManager = new EffectManager(overlay.getContext('2d')!);
 
+  // Set up coordinate mappers after they're created
+  function setupCoordinateMappers() {
+    trailRenderer.setCoordinateMapper(mapToCanvas);
+    debugRenderer.setCoordinateMapper(mapToCanvas);
+  }
+
   // Clash detection
   let lastClashTime = 0;
   const CLASH_COOLDOWN = 1000; // Minimum ms between clash effects
@@ -187,8 +193,33 @@ import Layout from '../layouts/Layout.astro';
     // Handle window resize
     window.addEventListener('resize', resizeAllCanvases);
 
+    // Handle visual viewport changes (mobile address bar, keyboard, etc.)
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', resizeAllCanvases);
+      window.visualViewport.addEventListener('scroll', resizeAllCanvases);
+    }
+
     // Update canvas size when video metadata is loaded
-    video.addEventListener('loadedmetadata', resizeAllCanvases);
+    video.addEventListener('loadedmetadata', () => {
+      // Force a resize after a short delay to ensure iOS has settled
+      resizeAllCanvases();
+      setTimeout(resizeAllCanvases, 100);
+      setTimeout(resizeAllCanvases, 500);
+    });
+
+    // Also handle when video starts playing (iOS sometimes delays dimension reporting)
+    video.addEventListener('playing', () => {
+      resizeAllCanvases();
+      setTimeout(resizeAllCanvases, 100);
+    });
+    
+    // iOS specific: resize when video dimensions change
+    video.addEventListener('resize', () => {
+      resizeAllCanvases();
+    });
+
+    // Setup coordinate mappers for renderers
+    setupCoordinateMappers();
 
     // Setup event listeners
     setupEventListeners();
@@ -201,8 +232,8 @@ import Layout from '../layouts/Layout.astro';
   }
 
   /**
-   * Resize all canvases to match the actual displayed video size
-   * This ensures overlays align correctly with object-fit: cover
+   * Resize all canvases to match the container size
+   * The overlay canvas covers the full viewport and we handle coordinate mapping separately
    */
   function resizeAllCanvases() {
     resizeOverlayCanvas();
@@ -211,47 +242,45 @@ import Layout from '../layouts/Layout.astro';
   }
 
   /**
-   * Resize overlay canvas to match the displayed video size
+   * Resize overlay canvas to match the container (viewport)
+   * The canvas fills the container and we handle cropping via coordinate transformation
    */
   function resizeOverlayCanvas() {
-    const containerWidth = window.innerWidth;
-    const containerHeight = window.innerHeight;
-    const videoWidth = video.videoWidth || 1280;
-    const videoHeight = video.videoHeight || 720;
+    // Use visualViewport on mobile for more accurate sizing
+    const containerWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+    const containerHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
 
-    const videoAspect = videoWidth / videoHeight;
-    const containerAspect = containerWidth / containerHeight;
+    overlay.width = containerWidth;
+    overlay.height = containerHeight;
 
-    let displayedWidth: number;
-    let displayedHeight: number;
+    // Fill the container completely
+    overlay.style.width = '100%';
+    overlay.style.height = '100%';
+    overlay.style.left = '0';
+    overlay.style.top = '0';
 
-    if (videoAspect > containerAspect) {
-      // Video is wider - fills height, cropped on sides
-      displayedHeight = containerHeight;
-      displayedWidth = containerHeight * videoAspect;
-    } else {
-      // Video is taller - fills width, cropped on top/bottom
-      displayedWidth = containerWidth;
-      displayedHeight = containerWidth / videoAspect;
-    }
-
-    overlay.width = displayedWidth;
-    overlay.height = displayedHeight;
-
-    // Center the canvas in the container
-    overlay.style.width = `${displayedWidth}px`;
-    overlay.style.height = `${displayedHeight}px`;
-    overlay.style.left = `${(containerWidth - displayedWidth) / 2}px`;
-    overlay.style.top = `${(containerHeight - displayedHeight) / 2}px`;
+    // Debug logging - uncomment if needed
+    // console.log('[Resize] Container:', containerWidth, 'x', containerHeight, 
+    //             'Video:', video.videoWidth, 'x', video.videoHeight);
   }
 
   /**
-   * Get the displayed video region within the container (accounting for object-fit: cover)
-   * Returns the offset and scale factors to map normalized coordinates to canvas
+   * Get the video-to-container scaling and cropping info for object-fit: cover
+   * Returns scale factors and crop offsets to map video coordinates to screen coordinates
    */
-  function getVideoDisplayRegion(): { offsetX: number; offsetY: number; scale: number } {
-    const containerWidth = window.innerWidth;
-    const containerHeight = window.innerHeight;
+  function getVideoMapping(): { 
+    scaleX: number; 
+    scaleY: number; 
+    cropX: number; 
+    cropY: number;
+    videoDisplayWidth: number;
+    videoDisplayHeight: number;
+  } {
+    // Use visualViewport on mobile for more accurate sizing
+    const containerWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+    const containerHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    
+    // Get actual video dimensions
     const videoWidth = video.videoWidth || 1280;
     const videoHeight = video.videoHeight || 720;
 
@@ -259,39 +288,51 @@ import Layout from '../layouts/Layout.astro';
     const containerAspect = containerWidth / containerHeight;
 
     let scale: number;
-    let offsetX = 0;
-    let offsetY = 0;
+    let cropX = 0;
+    let cropY = 0;
 
     if (videoAspect > containerAspect) {
-      // Video is wider - cropped on left/right, full height
+      // Video is wider than container - fills height, cropped on left/right
       scale = containerHeight / videoHeight;
       const displayedWidth = videoWidth * scale;
-      offsetX = (containerWidth - displayedWidth) / 2;
+      cropX = (displayedWidth - containerWidth) / 2 / scale; // How much video is cropped on each side in video coords
     } else {
-      // Video is taller - cropped on top/bottom, full width
+      // Video is taller than container - fills width, cropped on top/bottom
       scale = containerWidth / videoWidth;
       const displayedHeight = videoHeight * scale;
-      offsetY = (containerHeight - displayedHeight) / 2;
+      cropY = (displayedHeight - containerHeight) / 2 / scale; // How much video is cropped on each side in video coords
     }
 
-    return { offsetX, offsetY, scale };
+    return { 
+      scaleX: scale, 
+      scaleY: scale, 
+      cropX, 
+      cropY,
+      videoDisplayWidth: videoWidth * scale,
+      videoDisplayHeight: videoHeight * scale
+    };
   }
 
   /**
-   * Map normalized video coordinates (0-1) to canvas coordinates
-   * Accounts for object-fit: cover cropping
-   * Returns coordinates relative to the canvas element (0,0 = canvas top-left)
+   * Map normalized video coordinates (0-1) to canvas/screen coordinates
+   * Accounts for object-fit: cover cropping - only the visible portion maps to the screen
    */
   function mapToCanvas(normX: number, normY: number): { x: number; y: number } {
-    const { scale } = getVideoDisplayRegion();
+    const { scaleX, scaleY, cropX, cropY } = getVideoMapping();
+    const containerWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+    const containerHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
     const videoWidth = video.videoWidth || 1280;
     const videoHeight = video.videoHeight || 720;
 
-    // Return coordinates relative to canvas (canvas is sized to displayed video)
-    return {
-      x: normX * videoWidth * scale,
-      y: normY * videoHeight * scale,
-    };
+    // Convert normalized to video pixel coords
+    const videoX = normX * videoWidth;
+    const videoY = normY * videoHeight;
+
+    // Map to screen coordinates (accounting for the cropped-out portions)
+    const screenX = (videoX - cropX) * scaleX;
+    const screenY = (videoY - cropY) * scaleY;
+
+    return { x: screenX, y: screenY };
   }
 
   async function initializeDetector() {
@@ -555,8 +596,6 @@ import Layout from '../layouts/Layout.astro';
             }
           });
         } else {
-          const width = overlay.width;
-          const height = overlay.height;
           const ctx = overlay.getContext('2d')!;
           
           ctx.save();
@@ -568,29 +607,37 @@ import Layout from '../layouts/Layout.astro';
             const fencer = fencers.get(detection.id);
             
             if (wrist && indexMcp && tip && fencer) {
+              // Use mapToCanvas for coordinate transformation
+              const wristPos = mapToCanvas(wrist.x, wrist.y);
+              const mcpPos = mapToCanvas(indexMcp.x, indexMcp.y);
+              const tipPos = mapToCanvas(tip.x, tip.y);
+              
               ctx.strokeStyle = '#ffff00';
               ctx.lineWidth = 3;
               ctx.beginPath();
-              ctx.moveTo(wrist.x * width, wrist.y * height);
-              ctx.lineTo(indexMcp.x * width, indexMcp.y * height);
+              ctx.moveTo(wristPos.x, wristPos.y);
+              ctx.lineTo(mcpPos.x, mcpPos.y);
               ctx.stroke();
               
               ctx.strokeStyle = fencer.color;
               ctx.setLineDash([5, 5]);
               ctx.beginPath();
-              ctx.moveTo(indexMcp.x * width, indexMcp.y * height);
-              ctx.lineTo(tip.x * width, tip.y * height);
+              ctx.moveTo(mcpPos.x, mcpPos.y);
+              ctx.lineTo(tipPos.x, tipPos.y);
               ctx.stroke();
               ctx.setLineDash([]);
               
               ctx.fillStyle = fencer.color;
               ctx.beginPath();
-              ctx.arc(tip.x * width, tip.y * height, 6, 0, Math.PI * 2);
+              ctx.arc(tipPos.x, tipPos.y, 6, 0, Math.PI * 2);
               ctx.fill();
             }
           });
           ctx.restore();
         }
+        
+        // Draw calibration grid in vectors mode to help diagnose alignment
+        drawCalibrationGrid();
         break;
 
       case 'tips-only':
@@ -650,19 +697,90 @@ import Layout from '../layouts/Layout.astro';
     effectManager.updateAndRender(timestamp, effectWidth, effectHeight);
   }
 
+  // Draw calibration grid for debugging alignment issues
+  function drawCalibrationGrid() {
+    const ctx = overlay.getContext('2d')!;
+    const width = overlay.width;
+    const height = overlay.height;
+    
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    
+    // Draw 10% grid lines
+    for (let i = 1; i < 10; i++) {
+      const x = (width * i) / 10;
+      const y = (height * i) / 10;
+      
+      // Vertical lines
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      
+      // Horizontal lines
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+    
+    // Draw corner markers at mapped video corners
+    const tl = mapToCanvas(0, 0);
+    const tr = mapToCanvas(1, 0);
+    const bl = mapToCanvas(0, 1);
+    const br = mapToCanvas(1, 1);
+    
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    
+    // Draw video bounds
+    ctx.beginPath();
+    ctx.moveTo(tl.x, tl.y);
+    ctx.lineTo(tr.x, tr.y);
+    ctx.lineTo(br.x, br.y);
+    ctx.lineTo(bl.x, bl.y);
+    ctx.closePath();
+    ctx.stroke();
+    
+    // Draw corner markers
+    const corners = [tl, tr, bl, br];
+    corners.forEach((corner, i) => {
+      ctx.fillStyle = '#00ffff';
+      ctx.beginPath();
+      ctx.arc(corner.x, corner.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Label
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px monospace';
+      const labels = ['TL', 'TR', 'BL', 'BR'];
+      ctx.fillText(labels[i], corner.x + 10, corner.y - 10);
+    });
+    
+    ctx.restore();
+  }
+
   // Start initialization
   init();
 </script>
 
 <style>
+  /* Use 100dvh for dynamic viewport height - handles mobile address bar properly */
   #container {
     width: 100%;
-    height: 100vh;
+    height: 100vh; /* Fallback */
+    height: 100dvh; /* Modern browsers */
+    height: -webkit-fill-available; /* iOS Safari fallback */
     display: flex;
     justify-content: center;
     align-items: center;
     background: #000;
-    position: relative;
+    position: fixed; /* Use fixed to ensure full coverage */
+    top: 0;
+    left: 0;
     overflow: hidden;
   }
 
@@ -680,6 +798,8 @@ import Layout from '../layouts/Layout.astro';
     position: absolute;
     pointer-events: none;
     transform: scaleX(-1);
+    width: 100%;
+    height: 100%;
   }
 
   /* Hamburger Menu Toggle */

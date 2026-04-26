@@ -1,8 +1,8 @@
 # Tip Track - Session Resumption Document
 
 **Created**: April 24, 2026  
-**Updated**: April 24, 2026 (project renamed, pushed to GitHub)  
-**Status**: Phase 1 + Hand Tracking + UI Polish + GitHub ✅  
+**Updated**: April 26, 2026 (fixed iOS coordinate alignment)  
+**Status**: Phase 1 + Hand Tracking + UI Polish + iOS Fix ✅  
 **GitHub**: https://github.com/willi/tip-track  
 **Next Step**: Testing & refinement, or Phase 2 features
 
@@ -35,6 +35,27 @@ npm run dev
 - ✅ **Collapsible hamburger menu** for controls
 - ✅ **Exo font styling** (from photo-explorer)
 - ✅ Build succeeds, dev server runs
+- ✅ **iOS coordinate alignment fixed** - works on iPhone portrait & landscape
+
+---
+
+## Recent Fix: iOS Coordinate Alignment (April 26, 2026)
+
+**Problem**: Vertical misalignment on iPhone - landmarks matched at top of screen but drifted as you moved down.
+
+**Root Cause**: iOS Safari has different viewport handling and video metadata timing than desktop Chrome. Using `window.innerWidth/Height` for canvas sizing didn't account for the dynamic viewport (address bar, toolbars).
+
+**Solution**:
+1. Use `window.visualViewport` API for accurate container dimensions on mobile
+2. Fill full viewport with canvas (CSS `100dvh`, `position: fixed`)
+3. Proper `object-fit: cover` coordinate mapping accounting for cropped regions
+4. Multiple resize triggers for iOS's delayed video dimension reporting (`loadedmetadata`, `playing`, `resize` events + timeouts)
+
+**Key Changes**:
+- `resizeOverlayCanvas()` - Uses `visualViewport` when available
+- `getVideoMapping()` - Calculates scale and crop offsets for proper coordinate transformation
+- `mapToCanvas()` - Maps normalized video coords to screen coords accounting for cropping
+- Renderers now use a pluggable coordinate mapper function
 
 ---
 
@@ -138,21 +159,21 @@ tip-track/
 ├── README.md
 ├── src/
 │   ├── pages/
-│   │   └── index.astro           # Main app (handles model switching)
+│   │   └── index.astro           # Main app (model switching + coordinate mapping)
 │   ├── layouts/
 │   │   └── Layout.astro
 │   ├── components/
-│   │   ├── ControlPanel.astro    # Added: tracking mode selector
-│   │   └── VideoCanvas.astro
+│   │   └── (Astro components)
 │   ├── lib/
-│   │   ├── detector.ts           # Pose detection (existing)
-│   │   ├── hand-detector.ts      # NEW: Hand detection
-│   │   ├── unified-detector.ts   # NEW: Model-agnostic interface
-│   │   ├── tip-estimator.ts      # Pose mode only
-│   │   ├── trail-manager.ts      # Unchanged
-│   │   └── renderer.ts           # Unchanged
+│   │   ├── detector.ts           # Pose detection
+│   │   ├── hand-detector.ts      # Hand detection
+│   │   ├── unified-detector.ts   # Model-agnostic interface
+│   │   ├── tip-estimator.ts      # Pose mode tip estimation
+│   │   ├── trail-manager.ts      # Trail buffer management
+│   │   ├── renderer.ts           # Trail & debug rendering (with coordinate mapping)
+│   │   └── effects.ts            # Visual effects (flash, explosion)
 │   └── types/
-│       └── fencing.ts            # Added: TrackingMode type
+│       └── fencing.ts            # TypeScript interfaces
 └── public/
 ```
 

@@ -6,6 +6,7 @@ import type { TrailPoint, Fencer } from '../types/fencing';
 export class TrailRenderer {
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
+  private coordinateMapper: ((normX: number, normY: number) => { x: number; y: number }) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -14,6 +15,24 @@ export class TrailRenderer {
       throw new Error('Could not get 2D context from canvas');
     }
     this.ctx = ctx;
+  }
+
+  /**
+   * Set the coordinate mapper function to transform normalized video coords to canvas coords
+   */
+  setCoordinateMapper(mapper: (normX: number, normY: number) => { x: number; y: number }): void {
+    this.coordinateMapper = mapper;
+  }
+
+  /**
+   * Map normalized coordinates to canvas coordinates
+   */
+  private map(normX: number, normY: number): { x: number; y: number } {
+    if (this.coordinateMapper) {
+      return this.coordinateMapper(normX, normY);
+    }
+    // Fallback to direct mapping (canvas represents full video frame)
+    return { x: normX * this.canvas.width, y: normY * this.canvas.height };
   }
 
   /**
@@ -53,24 +72,22 @@ export class TrailRenderer {
     p1: TrailPoint,
     p2: TrailPoint,
     p3: TrailPoint,
-    width: number,
-    height: number,
     tension: number = 0.5
   ): { cp1x: number; cp1y: number; cp2x: number; cp2y: number } {
-    // Convert normalized coordinates to canvas coordinates
-    const x0 = p0.x * width, y0 = p0.y * height;
-    const x1 = p1.x * width, y1 = p1.y * height;
-    const x2 = p2.x * width, y2 = p2.y * height;
-    const x3 = p3.x * width, y3 = p3.y * height;
+    // Convert normalized coordinates to canvas coordinates using mapper
+    const c0 = this.map(p0.x, p0.y);
+    const c1 = this.map(p1.x, p1.y);
+    const c2 = this.map(p2.x, p2.y);
+    const c3 = this.map(p3.x, p3.y);
 
     // Standard Catmull-Rom to cubic bezier conversion
     // This ensures C1 continuity (smooth tangent) at segment joints
     // cp1 = p1 + (p2 - p0) / 6 * tension
     // cp2 = p2 - (p3 - p1) / 6 * tension
-    const cp1x = x1 + (x2 - x0) / 6 * tension;
-    const cp1y = y1 + (y2 - y0) / 6 * tension;
-    const cp2x = x2 - (x3 - x1) / 6 * tension;
-    const cp2y = y2 - (y3 - y1) / 6 * tension;
+    const cp1x = c1.x + (c2.x - c0.x) / 6 * tension;
+    const cp1y = c1.y + (c2.y - c0.y) / 6 * tension;
+    const cp2x = c2.x - (c3.x - c1.x) / 6 * tension;
+    const cp2y = c2.y - (c3.y - c1.y) / 6 * tension;
 
     return { cp1x, cp1y, cp2x, cp2y };
   }
@@ -81,9 +98,6 @@ export class TrailRenderer {
    */
   private renderNeonTrail(trail: TrailPoint[], color: string): void {
     if (trail.length < 2) return;
-
-    const width = this.canvas.width;
-    const height = this.canvas.height;
 
     // Get average z depth for this trail (closer = more negative z)
     const avgZ = trail.reduce((sum, p) => sum + p.z, 0) / trail.length;
@@ -112,7 +126,7 @@ export class TrailRenderer {
       const p2 = trail[i + 1];
       const p3 = trail[Math.min(trail.length - 1, i + 2)];
 
-      const cp = this.getControlPoints(p0, p1, p2, p3, width, height, 1.2);
+      const cp = this.getControlPoints(p0, p1, p2, p3, 1.2);
 
       const progress = (i + 1) / (trail.length - 1);
       const opacity = smoothstep(0, 1, progress) * p2.opacity;
@@ -122,15 +136,19 @@ export class TrailRenderer {
       // Closer segments get more glow (negative z = closer)
       const depthGlow = Math.max(0, -segmentZ * 0.8);
 
+      // Map base coordinates using the coordinate mapper
+      const c1 = this.map(p1.x, p1.y);
+      const c2 = this.map(p2.x, p2.y);
+
       segments.push({
-        x1: p1.x * width + parallaxX,
-        y1: p1.y * height + parallaxY,
+        x1: c1.x + parallaxX,
+        y1: c1.y + parallaxY,
         cp1x: cp.cp1x + parallaxX,
         cp1y: cp.cp1y + parallaxY,
         cp2x: cp.cp2x + parallaxX,
         cp2y: cp.cp2y + parallaxY,
-        x2: p2.x * width + parallaxX,
-        y2: p2.y * height + parallaxY,
+        x2: c2.x + parallaxX,
+        y2: c2.y + parallaxY,
         opacity,
         depthGlow,
       });
@@ -219,9 +237,6 @@ export class TrailRenderer {
    * Minimal - just a tiny white dot so the trail's white core is visible
    */
   renderTipDots(fencers: Map<string, Fencer>): void {
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-
     fencers.forEach((fencer) => {
       if (!fencer.tip) return;
 
@@ -230,8 +245,10 @@ export class TrailRenderer {
       const parallaxX = avgZ * 40;
       const parallaxY = avgZ * 25;
 
-      const x = fencer.tip.x * width + parallaxX;
-      const y = fencer.tip.y * height + parallaxY;
+      // Map coordinates using the coordinate mapper
+      const mapped = this.map(fencer.tip.x, fencer.tip.y);
+      const x = mapped.x + parallaxX;
+      const y = mapped.y + parallaxY;
 
       this.ctx.save();
 
@@ -267,6 +284,7 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 export class DebugRenderer {
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
+  private coordinateMapper: ((normX: number, normY: number) => { x: number; y: number }) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -275,6 +293,17 @@ export class DebugRenderer {
       throw new Error('Could not get 2D context from canvas');
     }
     this.ctx = ctx;
+  }
+
+  setCoordinateMapper(mapper: (normX: number, normY: number) => { x: number; y: number }): void {
+    this.coordinateMapper = mapper;
+  }
+
+  private map(normX: number, normY: number): { x: number; y: number } {
+    if (this.coordinateMapper) {
+      return this.coordinateMapper(normX, normY);
+    }
+    return { x: normX * this.canvas.width, y: normY * this.canvas.height };
   }
 
   resize(): void {
@@ -291,18 +320,14 @@ export class DebugRenderer {
    * Render pose landmarks as dots
    */
   renderLandmarks(landmarks: any[], color: string = '#00ff00'): void {
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-
     this.ctx.save();
     this.ctx.fillStyle = color;
 
     landmarks.forEach((lm) => {
       if (lm.visibility > 0.5) {
-        const x = lm.x * width;
-        const y = lm.y * height;
+        const mapped = this.map(lm.x, lm.y);
         this.ctx.beginPath();
-        this.ctx.arc(x, y, 4, 0, Math.PI * 2);
+        this.ctx.arc(mapped.x, mapped.y, 4, 0, Math.PI * 2);
         this.ctx.fill();
       }
     });
@@ -314,9 +339,6 @@ export class DebugRenderer {
    * Render skeleton with bones (lines) and joints (outline circles)
    */
   renderSkeleton(landmarks: any[], connections: [number, number][], color: string = '#00ff00'): void {
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-
     this.ctx.save();
 
     // Helper to check if landmark is valid
@@ -333,9 +355,11 @@ export class DebugRenderer {
       const endLm = landmarks[end];
 
       if (isValid(startLm) && isValid(endLm)) {
+        const startMapped = this.map(startLm.x, startLm.y);
+        const endMapped = this.map(endLm.x, endLm.y);
         this.ctx.beginPath();
-        this.ctx.moveTo(startLm.x * width, startLm.y * height);
-        this.ctx.lineTo(endLm.x * width, endLm.y * height);
+        this.ctx.moveTo(startMapped.x, startMapped.y);
+        this.ctx.lineTo(endMapped.x, endMapped.y);
         this.ctx.stroke();
       }
     });
@@ -355,10 +379,9 @@ export class DebugRenderer {
     uniqueIndices.forEach((idx) => {
       const lm = landmarks[idx];
       if (isValid(lm)) {
-        const x = lm.x * width;
-        const y = lm.y * height;
+        const mapped = this.map(lm.x, lm.y);
         this.ctx.beginPath();
-        this.ctx.arc(x, y, 6, 0, Math.PI * 2);
+        this.ctx.arc(mapped.x, mapped.y, 6, 0, Math.PI * 2);
         this.ctx.fill();
         this.ctx.stroke();
       }
@@ -376,19 +399,21 @@ export class DebugRenderer {
     tip: { x: number; y: number },
     color: string = '#00ff00'
   ): void {
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-
     if (wrist.visibility < 0.5 || elbow.visibility < 0.5) return;
 
     this.ctx.save();
+
+    // Map coordinates
+    const elbowMapped = this.map(elbow.x, elbow.y);
+    const wristMapped = this.map(wrist.x, wrist.y);
+    const tipMapped = this.map(tip.x, tip.y);
 
     // Elbow to wrist
     this.ctx.strokeStyle = '#ffff00';
     this.ctx.lineWidth = 3;
     this.ctx.beginPath();
-    this.ctx.moveTo(elbow.x * width, elbow.y * height);
-    this.ctx.lineTo(wrist.x * width, wrist.y * height);
+    this.ctx.moveTo(elbowMapped.x, elbowMapped.y);
+    this.ctx.lineTo(wristMapped.x, wristMapped.y);
     this.ctx.stroke();
 
     // Wrist to tip
@@ -396,15 +421,15 @@ export class DebugRenderer {
     this.ctx.lineWidth = 3;
     this.ctx.setLineDash([5, 5]);
     this.ctx.beginPath();
-    this.ctx.moveTo(wrist.x * width, wrist.y * height);
-    this.ctx.lineTo(tip.x * width, tip.y * height);
+    this.ctx.moveTo(wristMapped.x, wristMapped.y);
+    this.ctx.lineTo(tipMapped.x, tipMapped.y);
     this.ctx.stroke();
 
     // Draw tip marker
     this.ctx.setLineDash([]);
     this.ctx.fillStyle = color;
     this.ctx.beginPath();
-    this.ctx.arc(tip.x * width, tip.y * height, 6, 0, Math.PI * 2);
+    this.ctx.arc(tipMapped.x, tipMapped.y, 6, 0, Math.PI * 2);
     this.ctx.fill();
 
     this.ctx.restore();
@@ -418,15 +443,16 @@ export class DebugRenderer {
     tip: { x: number; y: number },
     color: string
   ): void {
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-
     if (wrist.visibility < 0.5) return;
 
-    const wx = wrist.x * width;
-    const wy = wrist.y * height;
-    const tx = tip.x * width;
-    const ty = tip.y * height;
+    // Map coordinates
+    const wristMapped = this.map(wrist.x, wrist.y);
+    const tipMapped = this.map(tip.x, tip.y);
+
+    const wx = wristMapped.x;
+    const wy = wristMapped.y;
+    const tx = tipMapped.x;
+    const ty = tipMapped.y;
 
     // Calculate perpendicular for blade width
     const dx = tx - wx;
