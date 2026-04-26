@@ -73,7 +73,7 @@ export type EffectMode =
   | 'motion-blur';   // Directional blur based on velocity
 
 // Tracking mode: switch between pose and hand tracking
-type TrackingMode = 'pose' | 'hand';
+export type TrackingMode = 'pose' | 'hand';
 
 // Unified detection result - works for both pose and hand modes
 export interface DetectionResult {

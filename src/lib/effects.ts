@@ -106,12 +106,21 @@ export class ExplosionEffect implements Effect {
 
     if (progress >= 1) return false;
 
+    // Safety check: ensure valid dimensions
+    if (width <= 0 || height <= 0) return true;
+
     ctx.save();
 
     // Expanding ring
-    const maxRadius = Math.max(width, height) * 0.3;
-    const radius = progress * maxRadius;
-    const alpha = 1 - progress;
+    const maxRadius = Math.max(Math.abs(width), Math.abs(height)) * 0.3;
+    const radius = Math.max(0, progress * maxRadius);
+    const alpha = Math.max(0, 1 - progress);
+
+    // Safety check for valid coordinates
+    if (!isFinite(this.x) || !isFinite(this.y) || !isFinite(radius)) {
+      ctx.restore();
+      return true;
+    }
 
     // Outer glow ring
     ctx.beginPath();

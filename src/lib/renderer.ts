@@ -1,7 +1,7 @@
 // Canvas Renderer Module
 // Handles trail rendering and visual effects
 
-import type { TrailPoint, TipPosition, Fencer } from '../types/fencing';
+import type { TrailPoint, Fencer } from '../types/fencing';
 
 export class TrailRenderer {
   private ctx: CanvasRenderingContext2D;

@@ -124,8 +124,6 @@ import Layout from '../layouts/Layout.astro';
     initDetector,
     detect,
     getTrackingMode,
-    setTrackingMode,
-    isDetectorInitialized as checkDetectorInit,
     resetCurrentDetector,
     POSE_LANDMARKS,
     POSE_CONNECTIONS,
@@ -184,23 +182,13 @@ import Layout from '../layouts/Layout.astro';
 
   // Initialize
   async function init() {
-    resizeCanvas();
-    trailRenderer.resize();
-    debugRenderer.resize();
+    resizeAllCanvases();
 
     // Handle window resize
-    window.addEventListener('resize', () => {
-      resizeCanvas();
-      trailRenderer.resize();
-      debugRenderer.resize();
-    });
+    window.addEventListener('resize', resizeAllCanvases);
 
     // Update canvas size when video metadata is loaded
-    video.addEventListener('loadedmetadata', () => {
-      resizeCanvas();
-      trailRenderer.resize();
-      debugRenderer.resize();
-    });
+    video.addEventListener('loadedmetadata', resizeAllCanvases);
 
     // Setup event listeners
     setupEventListeners();
@@ -213,10 +201,19 @@ import Layout from '../layouts/Layout.astro';
   }
 
   /**
-   * Resize canvas to match the actual displayed video size
+   * Resize all canvases to match the actual displayed video size
    * This ensures overlays align correctly with object-fit: cover
    */
-  function resizeCanvas() {
+  function resizeAllCanvases() {
+    resizeOverlayCanvas();
+    trailRenderer.resize();
+    debugRenderer.resize();
+  }
+
+  /**
+   * Resize overlay canvas to match the displayed video size
+   */
+  function resizeOverlayCanvas() {
     const containerWidth = window.innerWidth;
     const containerHeight = window.innerHeight;
     const videoWidth = video.videoWidth || 1280;
@@ -283,15 +280,17 @@ import Layout from '../layouts/Layout.astro';
   /**
    * Map normalized video coordinates (0-1) to canvas coordinates
    * Accounts for object-fit: cover cropping
+   * Returns coordinates relative to the canvas element (0,0 = canvas top-left)
    */
   function mapToCanvas(normX: number, normY: number): { x: number; y: number } {
-    const { offsetX, offsetY, scale } = getVideoDisplayRegion();
+    const { scale } = getVideoDisplayRegion();
     const videoWidth = video.videoWidth || 1280;
     const videoHeight = video.videoHeight || 720;
 
+    // Return coordinates relative to canvas (canvas is sized to displayed video)
     return {
-      x: normX * videoWidth * scale + offsetX,
-      y: normY * videoHeight * scale + offsetY,
+      x: normX * videoWidth * scale,
+      y: normY * videoHeight * scale,
     };
   }
 
@@ -645,7 +644,10 @@ import Layout from '../layouts/Layout.astro';
     }
 
     // Render any active effects on top
-    effectManager.updateAndRender(timestamp, overlay.width, overlay.height);
+    // Ensure valid canvas dimensions
+    const effectWidth = Math.max(1, overlay.width);
+    const effectHeight = Math.max(1, overlay.height);
+    effectManager.updateAndRender(timestamp, effectWidth, effectHeight);
   }
 
   // Start initialization
@@ -687,7 +689,7 @@ import Layout from '../layouts/Layout.astro';
     right: 20px;
     width: 50px;
     height: 50px;
-    background: rgba(0, 0, 0, 0.7);
+    background: linear-gradient(180deg, rgba(40, 40, 40, 0.6) 0%, rgba(0, 0, 0, 0.6) 100%);
     border: none;
     border-radius: 10px;
     cursor: pointer;
@@ -701,7 +703,7 @@ import Layout from '../layouts/Layout.astro';
   }
 
   #menuToggle:hover {
-    background: rgba(0, 0, 0, 0.85);
+    background: linear-gradient(180deg, rgba(60, 60, 60, 0.7) 0%, rgba(20, 20, 20, 0.7) 100%);
   }
 
   #menuToggle span {
@@ -717,7 +719,7 @@ import Layout from '../layouts/Layout.astro';
     position: absolute;
     top: 20px;
     right: 20px;
-    background: rgba(0, 0, 0, 0.85);
+    background: linear-gradient(180deg, rgba(45, 45, 45, 0.75) 0%, rgba(0, 0, 0, 0.75) 100%);
     backdrop-filter: blur(10px);
     padding: 25px;
     border-radius: 12px;
