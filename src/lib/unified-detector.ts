@@ -7,7 +7,8 @@ import {
   detectPose, 
   isDetectorReady, 
   resetDetector,
-  LANDMARKS as POSE_LANDMARKS 
+  LANDMARKS as POSE_LANDMARKS,
+  POSE_CONNECTIONS 
 } from './detector';
 import { 
   initHandDetector, 
@@ -211,5 +212,5 @@ export function extractTips(results: DetectionResult[]): Map<string, TipPosition
 }
 
 // Re-export types and constants for convenience
-export { POSE_LANDMARKS, HAND_LANDMARKS, HAND_CONNECTIONS };
+export { POSE_LANDMARKS, POSE_CONNECTIONS, HAND_LANDMARKS, HAND_CONNECTIONS };
 export type { TrackingMode };

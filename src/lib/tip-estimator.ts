@@ -4,8 +4,8 @@
 import type { Landmark, TipPosition, TipEstimator, Pose } from '../types/fencing';
 import { LANDMARKS } from './detector';
 
-// Default extension multiplier (1.5x forearm length)
-const DEFAULT_EXTENSION = 1.5;
+// Default extension multiplier (3x forearm length for longer sword tip)
+const DEFAULT_EXTENSION = 3.0;
 
 // Minimum confidence threshold for landmarks
 const MIN_CONFIDENCE = 0.5;
@@ -141,6 +141,7 @@ export function estimateTip(
   return {
     x: result.x,
     y: result.y,
+    z: wrist.z, // Include depth for 3D effects
     confidence: result.confidence,
     timestamp,
     side,

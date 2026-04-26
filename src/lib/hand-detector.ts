@@ -165,13 +165,15 @@ export async function detectHands(
 
 /**
  * Convert MediaPipe landmark to our Landmark interface
+ * Hands don't have visibility, so we set it to 1 (fully visible)
  */
 function convertToLandmark(lm: any): Landmark {
   return {
     x: lm.x ?? 0,
     y: lm.y ?? 0,
     z: lm.z ?? 0,
-    visibility: lm.visibility ?? 0,
+    // MediaPipe Hands returns visibility: 0 for all landmarks, so treat 0 as "no visibility data"
+    visibility: (lm.visibility && lm.visibility > 0) ? lm.visibility : 1,
   };
 }
 

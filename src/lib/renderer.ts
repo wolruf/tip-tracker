@@ -311,33 +311,55 @@ export class DebugRenderer {
   }
 
   /**
-   * Render skeleton connections
+   * Render skeleton with bones (lines) and joints (outline circles)
    */
-  renderSkeleton(landmarks: any[], color: string = '#00ff00'): void {
+  renderSkeleton(landmarks: any[], connections: [number, number][], color: string = '#00ff00'): void {
     const width = this.canvas.width;
     const height = this.canvas.height;
 
-    // Define skeleton connections (pairs of landmark indices)
-    const connections: [number, number][] = [
-      [11, 12], // shoulders
-      [11, 13], [13, 15], // left arm
-      [12, 14], [14, 16], // right arm
-      [11, 23], [12, 24], // torso
-      [23, 24], // hips
-    ];
-
     this.ctx.save();
+
+    // Helper to check if landmark is valid
+    const isValid = (lm: any) => lm && (lm.visibility === undefined || lm.visibility > 0.5);
+
+    // Draw bones (lines)
     this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = 2;
+    this.ctx.lineWidth = 3;
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
 
     connections.forEach(([start, end]) => {
       const startLm = landmarks[start];
       const endLm = landmarks[end];
 
-      if (startLm?.visibility > 0.5 && endLm?.visibility > 0.5) {
+      if (isValid(startLm) && isValid(endLm)) {
         this.ctx.beginPath();
         this.ctx.moveTo(startLm.x * width, startLm.y * height);
         this.ctx.lineTo(endLm.x * width, endLm.y * height);
+        this.ctx.stroke();
+      }
+    });
+
+    // Draw joints (outline circles) at each connected landmark
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = 2;
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; // Semi-transparent fill
+
+    // Get unique landmark indices from connections
+    const uniqueIndices = new Set<number>();
+    connections.forEach(([start, end]) => {
+      uniqueIndices.add(start);
+      uniqueIndices.add(end);
+    });
+
+    uniqueIndices.forEach((idx) => {
+      const lm = landmarks[idx];
+      if (isValid(lm)) {
+        const x = lm.x * width;
+        const y = lm.y * height;
+        this.ctx.beginPath();
+        this.ctx.arc(x, y, 6, 0, Math.PI * 2);
+        this.ctx.fill();
         this.ctx.stroke();
       }
     });

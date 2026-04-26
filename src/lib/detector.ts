@@ -22,6 +22,28 @@ export const LANDMARKS = {
   RIGHT_HIP: 24,
 } as const;
 
+// Pose skeleton connections for debug rendering
+// Based on MediaPipe Pose topology: https://developers.google.com/mediapipe/solutions/vision/pose_landmarker
+export const POSE_CONNECTIONS: [number, number][] = [
+  // Face (simplified - just key connections)
+  [0, 1], [0, 4], [1, 2], [2, 3], [3, 7], [4, 5], [5, 6], [6, 8],
+  [9, 10], // mouth
+  // Torso
+  [11, 12], // shoulders
+  [11, 23], // left shoulder to left hip
+  [12, 24], // right shoulder to right hip
+  [23, 24], // hips
+  // Arms
+  [11, 13], [13, 15], // left arm
+  [12, 14], [14, 16], // right arm
+  // Hands
+  [15, 17], [15, 19], [15, 21], // left hand
+  [16, 18], [16, 20], [16, 22], // right hand
+  // Legs
+  [23, 25], [25, 27], [27, 29], [29, 31], // left leg
+  [24, 26], [26, 28], [28, 30], [30, 32], // right leg
+];
+
 /**
  * Initialize the MediaPipe Pose Landmarker
  * Loads models from CDN (~8MB first time, cached subsequently)
@@ -117,7 +139,7 @@ function convertToLandmark(lm: any): Landmark {
     x: lm.x ?? 0,
     y: lm.y ?? 0,
     z: lm.z ?? 0,
-    visibility: lm.visibility ?? 0,
+    visibility: lm.visibility ?? 1, // Default to visible if not provided
   };
 }
 

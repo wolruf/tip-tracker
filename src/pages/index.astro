@@ -128,6 +128,7 @@ import Layout from '../layouts/Layout.astro';
     isDetectorInitialized as checkDetectorInit,
     resetCurrentDetector,
     POSE_LANDMARKS,
+    POSE_CONNECTIONS,
     HAND_LANDMARKS,
     HAND_CONNECTIONS
   } from '../lib/unified-detector';
@@ -194,6 +195,13 @@ import Layout from '../layouts/Layout.astro';
       debugRenderer.resize();
     });
 
+    // Update canvas size when video metadata is loaded
+    video.addEventListener('loadedmetadata', () => {
+      resizeCanvas();
+      trailRenderer.resize();
+      debugRenderer.resize();
+    });
+
     // Setup event listeners
     setupEventListeners();
 
@@ -204,9 +212,87 @@ import Layout from '../layouts/Layout.astro';
     await startCamera();
   }
 
+  /**
+   * Resize canvas to match the actual displayed video size
+   * This ensures overlays align correctly with object-fit: cover
+   */
   function resizeCanvas() {
-    overlay.width = window.innerWidth;
-    overlay.height = window.innerHeight;
+    const containerWidth = window.innerWidth;
+    const containerHeight = window.innerHeight;
+    const videoWidth = video.videoWidth || 1280;
+    const videoHeight = video.videoHeight || 720;
+
+    const videoAspect = videoWidth / videoHeight;
+    const containerAspect = containerWidth / containerHeight;
+
+    let displayedWidth: number;
+    let displayedHeight: number;
+
+    if (videoAspect > containerAspect) {
+      // Video is wider - fills height, cropped on sides
+      displayedHeight = containerHeight;
+      displayedWidth = containerHeight * videoAspect;
+    } else {
+      // Video is taller - fills width, cropped on top/bottom
+      displayedWidth = containerWidth;
+      displayedHeight = containerWidth / videoAspect;
+    }
+
+    overlay.width = displayedWidth;
+    overlay.height = displayedHeight;
+
+    // Center the canvas in the container
+    overlay.style.width = `${displayedWidth}px`;
+    overlay.style.height = `${displayedHeight}px`;
+    overlay.style.left = `${(containerWidth - displayedWidth) / 2}px`;
+    overlay.style.top = `${(containerHeight - displayedHeight) / 2}px`;
+  }
+
+  /**
+   * Get the displayed video region within the container (accounting for object-fit: cover)
+   * Returns the offset and scale factors to map normalized coordinates to canvas
+   */
+  function getVideoDisplayRegion(): { offsetX: number; offsetY: number; scale: number } {
+    const containerWidth = window.innerWidth;
+    const containerHeight = window.innerHeight;
+    const videoWidth = video.videoWidth || 1280;
+    const videoHeight = video.videoHeight || 720;
+
+    const videoAspect = videoWidth / videoHeight;
+    const containerAspect = containerWidth / containerHeight;
+
+    let scale: number;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (videoAspect > containerAspect) {
+      // Video is wider - cropped on left/right, full height
+      scale = containerHeight / videoHeight;
+      const displayedWidth = videoWidth * scale;
+      offsetX = (containerWidth - displayedWidth) / 2;
+    } else {
+      // Video is taller - cropped on top/bottom, full width
+      scale = containerWidth / videoWidth;
+      const displayedHeight = videoHeight * scale;
+      offsetY = (containerHeight - displayedHeight) / 2;
+    }
+
+    return { offsetX, offsetY, scale };
+  }
+
+  /**
+   * Map normalized video coordinates (0-1) to canvas coordinates
+   * Accounts for object-fit: cover cropping
+   */
+  function mapToCanvas(normX: number, normY: number): { x: number; y: number } {
+    const { offsetX, offsetY, scale } = getVideoDisplayRegion();
+    const videoWidth = video.videoWidth || 1280;
+    const videoHeight = video.videoHeight || 720;
+
+    return {
+      x: normX * videoWidth * scale + offsetX,
+      y: normY * videoHeight * scale + offsetY,
+    };
   }
 
   async function initializeDetector() {
@@ -431,11 +517,13 @@ import Layout from '../layouts/Layout.astro';
       case 'landmarks':
         if (trackingMode === 'pose') {
           currentDetections.forEach(detection => {
-            debugRenderer.renderLandmarks(detection.landmarks);
+            const fencer = fencers.get(detection.id);
+            debugRenderer.renderLandmarks(detection.landmarks, fencer?.color ?? '#00ff00');
           });
         } else {
           currentDetections.forEach(detection => {
-            debugRenderer.renderLandmarks(detection.landmarks, '#00ffff');
+            const fencer = fencers.get(detection.id);
+            debugRenderer.renderLandmarks(detection.landmarks, fencer?.color ?? '#00ffff');
           });
         }
         break;
@@ -443,29 +531,14 @@ import Layout from '../layouts/Layout.astro';
       case 'skeleton':
         if (trackingMode === 'pose') {
           currentDetections.forEach(detection => {
-            debugRenderer.renderSkeleton(detection.landmarks);
+            const fencer = fencers.get(detection.id);
+            debugRenderer.renderSkeleton(detection.landmarks, POSE_CONNECTIONS, fencer?.color ?? '#00ff00');
           });
         } else {
-          const width = overlay.width;
-          const height = overlay.height;
-          const ctx = overlay.getContext('2d')!;
-          
-          ctx.save();
-          ctx.strokeStyle = '#00ffff';
-          ctx.lineWidth = 2;
-          
           currentDetections.forEach(detection => {
-            const lm = detection.landmarks;
-            HAND_CONNECTIONS.forEach(([start, end]) => {
-              if (lm[start]?.visibility > 0.5 && lm[end]?.visibility > 0.5) {
-                ctx.beginPath();
-                ctx.moveTo(lm[start].x * width, lm[start].y * height);
-                ctx.lineTo(lm[end].x * width, lm[end].y * height);
-                ctx.stroke();
-              }
-            });
+            const fencer = fencers.get(detection.id);
+            debugRenderer.renderSkeleton(detection.landmarks, HAND_CONNECTIONS, fencer?.color ?? '#00ffff');
           });
-          ctx.restore();
         }
         break;
 
@@ -540,9 +613,9 @@ import Layout from '../layouts/Layout.astro';
               debugRenderer.renderLightsaber(wrist, detection.tip, fencer.color);
             }
           } else {
-            const wrist = detection.landmarks[HAND_LANDMARKS.WRIST];
-            if (wrist && detection.tip) {
-              debugRenderer.renderLightsaber(wrist, detection.tip, fencer.color);
+            const indexMcp = detection.landmarks[HAND_LANDMARKS.INDEX_FINGER_MCP];
+            if (indexMcp && detection.tip) {
+              debugRenderer.renderLightsaber(indexMcp, detection.tip, fencer.color);
             }
           }
         });
@@ -555,32 +628,16 @@ import Layout from '../layouts/Layout.astro';
       case 'all':
         if (trackingMode === 'pose') {
           currentDetections.forEach(detection => {
-            debugRenderer.renderLandmarks(detection.landmarks);
-            debugRenderer.renderSkeleton(detection.landmarks);
+            const fencer = fencers.get(detection.id);
+            debugRenderer.renderLandmarks(detection.landmarks, fencer?.color ?? '#00ff00');
+            debugRenderer.renderSkeleton(detection.landmarks, POSE_CONNECTIONS, fencer?.color ?? '#00ff00');
           });
         } else {
           currentDetections.forEach(detection => {
-            debugRenderer.renderLandmarks(detection.landmarks, '#00ffff');
+            const fencer = fencers.get(detection.id);
+            debugRenderer.renderLandmarks(detection.landmarks, fencer?.color ?? '#00ffff');
+            debugRenderer.renderSkeleton(detection.landmarks, HAND_CONNECTIONS, fencer?.color ?? '#00ffff');
           });
-          
-          const width = overlay.width;
-          const height = overlay.height;
-          const ctx = overlay.getContext('2d')!;
-          ctx.save();
-          ctx.strokeStyle = '#00ffff';
-          ctx.lineWidth = 2;
-          currentDetections.forEach(detection => {
-            const lm = detection.landmarks;
-            HAND_CONNECTIONS.forEach(([start, end]) => {
-              if (lm[start]?.visibility > 0.5 && lm[end]?.visibility > 0.5) {
-                ctx.beginPath();
-                ctx.moveTo(lm[start].x * width, lm[start].y * height);
-                ctx.lineTo(lm[end].x * width, lm[end].y * height);
-                ctx.stroke();
-              }
-            });
-          });
-          ctx.restore();
         }
         trailRenderer.renderTrails(fencers);
         trailRenderer.renderTipDots(fencers);
@@ -619,10 +676,6 @@ import Layout from '../layouts/Layout.astro';
 
   .overlay-canvas {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
     pointer-events: none;
     transform: scaleX(-1);
   }
