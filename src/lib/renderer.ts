@@ -110,14 +110,15 @@ export class TrailRenderer {
     const parallaxX = avgZ * 40; // pixels
     const parallaxY = avgZ * 25;
 
-    // Pre-calculate all canvas coordinates, control points, and opacities with depth effects
+    // Pre-calculate all canvas coordinates, control points, and depth properties
     const segments: {
       x1: number; y1: number;
       cp1x: number; cp1y: number;
       cp2x: number; cp2y: number;
       x2: number; y2: number;
       opacity: number;
-      depthGlow: number; // extra glow intensity based on depth
+      depthGlow: number;
+      widthScale: number; // Per-segment width scale for perspective effect
     }[] = [];
 
     for (let i = 0; i < trail.length - 1; i++) {
@@ -131,10 +132,18 @@ export class TrailRenderer {
       const progress = (i + 1) / (trail.length - 1);
       const opacity = smoothstep(0, 1, progress) * p2.opacity;
 
-      // Average z for this segment
+      // Average z for this segment (closer = more negative)
       const segmentZ = (p1.z + p2.z) / 2;
+      
       // Closer segments get more glow (negative z = closer)
       const depthGlow = Math.max(0, -segmentZ * 0.8);
+      
+      // Per-segment width scale: closer = wider, further = narrower
+      // Tuned: 3.75x at close (z=-0.5), 0.2x at far (z=0.5)
+      // Linear interpolation: scale = baseWidth - z * perspectiveWidthScale
+      const baseWidth = 0.5;
+      const perspectiveWidthScale = 5.0;
+      const widthScale = Math.max(0.2, baseWidth - segmentZ * perspectiveWidthScale);
 
       // Map base coordinates using the coordinate mapper
       const c1 = this.map(p1.x, p1.y);
@@ -151,38 +160,42 @@ export class TrailRenderer {
         y2: c2.y + parallaxY,
         opacity,
         depthGlow,
+        widthScale,
       });
     }
 
-    // Draw each segment individually for per-segment opacity control
+    // Draw each segment individually for per-segment width and opacity control
     // Ensure white core always renders for very short trails
     const whiteCoreLength = Math.max(3, Math.min(15, Math.floor(segments.length * 0.5)));
 
-    // Base widths scaled by depth
-    const baseOuter = 24 * depthScale;
-    const baseMiddle = 16 * depthScale;
-    const baseInner = 10 * depthScale;
-    const baseCore = 5 * depthScale;
-
     segments.forEach((seg, i) => {
+      // Per-segment width scale for perspective effect
+      const segWidthScale = seg.widthScale;
+      
       // Depth-adjusted glow: closer segments glow more
       const glowBoost = seg.depthGlow;
 
+      // Base widths scaled by both overall depth and per-segment perspective
+      const outer = 24 * depthScale * segWidthScale;
+      const middle = 16 * depthScale * segWidthScale;
+      const inner = 10 * depthScale * segWidthScale;
+      const core = 5 * depthScale * segWidthScale;
+
       // Multiple thin layers with low opacity for smooth blending
       // Outer glow - very wide, very low opacity, boosted by depth
-      this.drawSegment(seg, color, baseOuter, 30 + glowBoost * 20, 0.15 + glowBoost * 0.1);
+      this.drawSegment(seg, color, outer, 30 + glowBoost * 20, 0.15 + glowBoost * 0.1);
       // Middle glow
-      this.drawSegment(seg, color, baseMiddle, 20 + glowBoost * 15, 0.2 + glowBoost * 0.1);
+      this.drawSegment(seg, color, middle, 20 + glowBoost * 15, 0.2 + glowBoost * 0.1);
       // Inner glow
-      this.drawSegment(seg, color, baseInner, 10 + glowBoost * 10, 0.25 + glowBoost * 0.1);
+      this.drawSegment(seg, color, inner, 10 + glowBoost * 10, 0.25 + glowBoost * 0.1);
       // Core - ensure minimum alpha to prevent black appearance
-      this.drawSegment(seg, color, baseCore, 0, Math.max(0.3, 0.5 + glowBoost * 0.2));
+      this.drawSegment(seg, color, core, 0, Math.max(0.3, 0.5 + glowBoost * 0.2));
 
       // White core with smooth fade-in - ensure it renders for all segments in short trails
       if (i >= segments.length - whiteCoreLength) {
         const whiteProgress = (i - (segments.length - whiteCoreLength)) / Math.max(1, whiteCoreLength - 1);
         const whiteOpacity = smoothstep(0, 1, whiteProgress);
-        this.drawSegment(seg, '#ffffff', 2 * depthScale, glowBoost * 10, whiteOpacity);
+        this.drawSegment(seg, '#ffffff', 2 * depthScale * segWidthScale, glowBoost * 10, whiteOpacity);
       }
     });
   }
@@ -234,7 +247,7 @@ export class TrailRenderer {
 
   /**
    * Render a small dot at the head (latest point) of each trail
-   * Minimal - just a tiny white dot so the trail's white core is visible
+   * Size varies with depth for perspective effect
    */
   renderTipDots(fencers: Map<string, Fencer>): void {
     fencers.forEach((fencer) => {
@@ -250,12 +263,16 @@ export class TrailRenderer {
       const x = mapped.x + parallaxX;
       const y = mapped.y + parallaxY;
 
+      // Perspective scale for tip dot: closer = larger
+      // Same formula as trail segments: 1.975 - z * 3.55
+      const widthScale = Math.max(0.2, 1.975 - avgZ * 3.55);
+
       this.ctx.save();
 
-      // White tip dot - slightly larger to match the trail head
+      // White tip dot - size varies with depth for perspective
       this.ctx.fillStyle = '#ffffff';
       this.ctx.beginPath();
-      this.ctx.arc(x, y, 3, 0, Math.PI * 2);
+      this.ctx.arc(x, y, 3 * widthScale, 0, Math.PI * 2);
       this.ctx.fill();
 
       this.ctx.restore();

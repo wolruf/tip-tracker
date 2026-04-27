@@ -1,10 +1,10 @@
 # Tip Track - Session Resumption Document
 
 **Created**: April 24, 2026  
-**Updated**: April 26, 2026 (fixed iOS coordinate alignment)  
-**Status**: Phase 1 + Hand Tracking + UI Polish + iOS Fix ✅  
+**Updated**: April 26, 2026 (perspective trail width + iOS fix)  
+**Status**: Phase 1 + Hand Tracking + UI Polish + iOS Fix + Perspective ✅  
 **GitHub**: https://github.com/willi/tip-track  
-**Next Step**: Testing & refinement, or Phase 2 features
+**Next Step**: CEO demo recording
 
 ---
 
@@ -28,6 +28,7 @@ npm run dev
 - ✅ Runtime switching between modes
 - ✅ 1-2 target detection (left=green, right=red)
 - ✅ Neon trail rendering with glow
+- ✅ **Perspective trails** - width varies with z-depth (closer = thicker)
 - ✅ All 9 debug modes
 - ✅ 60fps rendering with interpolation
 - ✅ Adjustable trail length, inference rate
