@@ -179,6 +179,8 @@ import Layout from '../layouts/Layout.astro';
   function setupCoordinateMappers() {
     trailRenderer.setCoordinateMapper(mapToCanvas);
     debugRenderer.setCoordinateMapper(mapToCanvas);
+    // Set initial rates for lightsaber interpolation
+    debugRenderer.setRates(60, inferenceFps);
   }
 
   // Clash detection
@@ -339,7 +341,7 @@ import Layout from '../layouts/Layout.astro';
     detectionStatus.textContent = `Loading ${trackingMode} model...`;
     try {
       await initDetector(trackingMode, {
-        numTargets: 2,
+        numTargets: trackingMode === 'pose' ? 1 : 2, // 1 person for pose, 2 for hand
         minDetectionConfidence: 0.5,
         minPresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
@@ -402,6 +404,8 @@ import Layout from '../layouts/Layout.astro';
       inferenceRateValue.textContent = value.toString();
       inferenceFps = value;
       detectionInterval = 1000 / inferenceFps;
+      // Update debug renderer for lightsaber interpolation
+      debugRenderer.setRates(60, inferenceFps);
     });
 
     // Glow intensity
@@ -511,6 +515,8 @@ import Layout from '../layouts/Layout.astro';
               lastClashTime = timestamp;
             }
           }
+          
+
         } catch (err) {
           console.error('Detection error:', err);
         }
@@ -591,7 +597,8 @@ import Layout from '../layouts/Layout.astro';
             if (wrist && elbow && detection.tip) {
               const fencer = fencers.get(detection.id);
               if (fencer) {
-                debugRenderer.renderVectors(wrist, elbow, detection.tip, fencer.color);
+                // Use new hand-starting vector for Pose mode
+                debugRenderer.renderVectors(wrist, elbow, detection.tip, fencer.color, true);
               }
             }
           });

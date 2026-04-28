@@ -43,7 +43,7 @@ export class TrailManager {
   }
 
   // Distance threshold for matching detections to existing fencers (normalized coords)
-  private static readonly PROXIMITY_THRESHOLD = 0.3; // 30% of screen width/height
+  private static readonly PROXIMITY_THRESHOLD = 0.5; // 50% of screen width/height (was 30%)
 
   /**
    * Assign detections to fencers using proximity-based tracking
@@ -103,25 +103,33 @@ export class TrailManager {
     });
 
     // Second pass: assign remaining detections by position (new fencers)
+    // Special case: if only 1 detection, always use fencer 'A' (no switching)
     const remaining = Array.from(unassigned.values());
-    remaining.sort((a, b) => a.x - b.x);
+    
+    if (remaining.length === 1) {
+      // Single detection - always use fencer A to prevent color switching
+      assigned.set('A', remaining[0]);
+    } else if (remaining.length > 1) {
+      // Multiple detections - sort by position and assign
+      remaining.sort((a, b) => a.x - b.x);
 
-    remaining.forEach((detection, index) => {
-      // Determine target based on position and availability
-      const onLeft = detection.x < 0.5;
-      const aAvailable = !assigned.has('A');
-      const bAvailable = !assigned.has('B');
+      remaining.forEach((detection, index) => {
+        // Determine target based on position and availability
+        const onLeft = detection.x < 0.5;
+        const aAvailable = !assigned.has('A');
+        const bAvailable = !assigned.has('B');
 
-      if (onLeft && aAvailable) {
-        assigned.set('A', detection);
-      } else if (!onLeft && bAvailable) {
-        assigned.set('B', detection);
-      } else if (aAvailable) {
-        assigned.set('A', detection);
-      } else if (bAvailable) {
-        assigned.set('B', detection);
-      }
-    });
+        if (onLeft && aAvailable) {
+          assigned.set('A', detection);
+        } else if (!onLeft && bAvailable) {
+          assigned.set('B', detection);
+        } else if (aAvailable) {
+          assigned.set('A', detection);
+        } else if (bAvailable) {
+          assigned.set('B', detection);
+        }
+      });
+    }
 
     return assigned;
   }

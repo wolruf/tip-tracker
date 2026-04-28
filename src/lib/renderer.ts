@@ -302,6 +302,19 @@ export class DebugRenderer {
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
   private coordinateMapper: ((normX: number, normY: number) => { x: number; y: number }) | null = null;
+  
+  // Store PREVIOUS screen positions for motion trail
+  private prevWristScreen: { x: number; y: number } | null = null;
+  private prevTipScreen: { x: number; y: number } | null = null;
+  // Store CURRENT screen positions (so we can shift to prev on new detection)
+  private currWristScreen: { x: number; y: number } | null = null;
+  private currTipScreen: { x: number; y: number } | null = null;
+  // Track last normalized detection positions to detect changes
+  private lastWristNorm: { x: number; y: number } | null = null;
+  private lastTipNorm: { x: number; y: number } | null = null;
+  // Frame rate and inference rate for interpolation
+  private renderFrameRate: number = 60;
+  private inferenceRate: number = 15;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -310,6 +323,11 @@ export class DebugRenderer {
       throw new Error('Could not get 2D context from canvas');
     }
     this.ctx = ctx;
+  }
+  
+  setRates(renderFps: number, inferenceFps: number): void {
+    this.renderFrameRate = renderFps;
+    this.inferenceRate = inferenceFps;
   }
 
   setCoordinateMapper(mapper: (normX: number, normY: number) => { x: number; y: number }): void {
@@ -409,12 +427,14 @@ export class DebugRenderer {
 
   /**
    * Render forearm vectors (elbow -> wrist -> tip)
+   * For Pose mode: vector starts at hand (tip) and extends back along forearm direction
    */
   renderVectors(
     wrist: any,
     elbow: any,
     tip: { x: number; y: number },
-    color: string = '#00ff00'
+    color: string = '#00ff00',
+    startFromHand: boolean = true
   ): void {
     if (wrist.visibility < 0.5 || elbow.visibility < 0.5) return;
 
@@ -425,97 +445,291 @@ export class DebugRenderer {
     const wristMapped = this.map(wrist.x, wrist.y);
     const tipMapped = this.map(tip.x, tip.y);
 
-    // Elbow to wrist
-    this.ctx.strokeStyle = '#ffff00';
-    this.ctx.lineWidth = 3;
-    this.ctx.beginPath();
-    this.ctx.moveTo(elbowMapped.x, elbowMapped.y);
-    this.ctx.lineTo(wristMapped.x, wristMapped.y);
-    this.ctx.stroke();
+    if (startFromHand) {
+      // New style: Vector starts at hand and extends back toward elbow
+      // Calculate direction from elbow to wrist (forearm direction)
+      const dirX = wristMapped.x - elbowMapped.x;
+      const dirY = wristMapped.y - elbowMapped.y;
+      const dirLen = Math.sqrt(dirX * dirX + dirY * dirY);
+      
+      // Normalize direction
+      const normDirX = dirX / dirLen;
+      const normDirY = dirY / dirLen;
+      
+      // Calculate sword length (0.5x forearm)
+      const swordLen = dirLen * 0.5;
+      
+      // "Cheat": Extend the sword further out from the elbow
+      // Move both start and end points outward along the sword direction
+      const extension = dirLen * 3.0; // Extend 300% of forearm length beyond tip (very dramatic)
+      
+      // Starting point (tip of sword) - extended outward
+      const handX = tipMapped.x + normDirX * extension;
+      const handY = tipMapped.y + normDirY * extension;
+      
+      // End point (handle of sword) - also extended, keeping same sword length
+      const endX = handX - normDirX * swordLen;
+      const endY = handY - normDirY * swordLen;
+      
+      // Draw forearm reference (subtle)
+      this.ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)';
+      this.ctx.lineWidth = 2;
+      this.ctx.setLineDash([]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(elbowMapped.x, elbowMapped.y);
+      this.ctx.lineTo(wristMapped.x, wristMapped.y);
+      this.ctx.stroke();
+      
+      // Draw sword vector from hand
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = 4;
+      this.ctx.setLineDash([5, 5]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(handX, handY);
+      this.ctx.lineTo(endX, endY);
+      this.ctx.stroke();
+      
+      // Draw hand/tip marker
+      this.ctx.setLineDash([]);
+      this.ctx.fillStyle = color;
+      this.ctx.beginPath();
+      this.ctx.arc(handX, handY, 8, 0, Math.PI * 2);
+      this.ctx.fill();
+      
+      // Draw end marker
+      this.ctx.fillStyle = '#ffffff';
+      this.ctx.beginPath();
+      this.ctx.arc(endX, endY, 4, 0, Math.PI * 2);
+      this.ctx.fill();
+    } else {
+      // Original style: Elbow -> wrist -> tip
+      // Elbow to wrist
+      this.ctx.strokeStyle = '#ffff00';
+      this.ctx.lineWidth = 3;
+      this.ctx.beginPath();
+      this.ctx.moveTo(elbowMapped.x, elbowMapped.y);
+      this.ctx.lineTo(wristMapped.x, wristMapped.y);
+      this.ctx.stroke();
 
-    // Wrist to tip
-    this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = 3;
-    this.ctx.setLineDash([5, 5]);
-    this.ctx.beginPath();
-    this.ctx.moveTo(wristMapped.x, wristMapped.y);
-    this.ctx.lineTo(tipMapped.x, tipMapped.y);
-    this.ctx.stroke();
+      // Wrist to tip
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = 3;
+      this.ctx.setLineDash([5, 5]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(wristMapped.x, wristMapped.y);
+      this.ctx.lineTo(tipMapped.x, tipMapped.y);
+      this.ctx.stroke();
 
-    // Draw tip marker
-    this.ctx.setLineDash([]);
-    this.ctx.fillStyle = color;
-    this.ctx.beginPath();
-    this.ctx.arc(tipMapped.x, tipMapped.y, 6, 0, Math.PI * 2);
-    this.ctx.fill();
+      // Draw tip marker
+      this.ctx.setLineDash([]);
+      this.ctx.fillStyle = color;
+      this.ctx.beginPath();
+      this.ctx.arc(tipMapped.x, tipMapped.y, 6, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
 
     this.ctx.restore();
   }
 
   /**
-   * Render lightsaber blade effect (triangle from wrist through tip)
+   * Render lightsaber blade effect (motion-based quadrilateral)
+   * Creates a blade shape connecting previous and current sword positions
    */
   renderLightsaber(
     wrist: any,
     tip: { x: number; y: number },
     color: string
   ): void {
-    if (wrist.visibility < 0.5) return;
+    // Check visibility for pose mode, or just existence for hand mode
+    if (wrist.visibility !== undefined && wrist.visibility < 0.5) return;
 
-    // Map coordinates
-    const wristMapped = this.map(wrist.x, wrist.y);
-    const tipMapped = this.map(tip.x, tip.y);
-
-    const wx = wristMapped.x;
-    const wy = wristMapped.y;
-    const tx = tipMapped.x;
-    const ty = tipMapped.y;
-
-    // Calculate perpendicular for blade width
-    const dx = tx - wx;
-    const dy = ty - wy;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const perpX = (-dy / len) * 8;
-    const perpY = (dx / len) * 8;
+    // Map current coordinates to screen
+    const wristScreenOrig = this.map(wrist.x, wrist.y);
+    const tipScreenOrig = this.map(tip.x, tip.y);
+    
+    // "Cheat": Adjust sword position - move handle outward, shorten sword
+    // Calculate direction from wrist to tip
+    const dirX = tipScreenOrig.x - wristScreenOrig.x;
+    const dirY = tipScreenOrig.y - wristScreenOrig.y;
+    const dirLen = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+    const normDirX = dirX / dirLen;
+    const normDirY = dirY / dirLen;
+    
+    // Move handle OUT toward the tip (away from elbow) - 20% toward tip
+    const handleShift = dirLen * 0.2;
+    const wristScreen = {
+      x: wristScreenOrig.x + normDirX * handleShift,
+      y: wristScreenOrig.y + normDirY * handleShift
+    };
+    
+    // Tip 30% beyond original tip
+    const tipShift = dirLen * 0.3;
+    const tipScreen = {
+      x: tipScreenOrig.x + normDirX * tipShift,
+      y: tipScreenOrig.y + normDirY * tipShift
+    };
+    
+    // Check if this is new detection data (different from last frame)
+    const isNewData = !this.lastWristNorm || 
+      Math.abs(wrist.x - this.lastWristNorm.x) > 0.0001 ||
+      Math.abs(wrist.y - this.lastWristNorm.y) > 0.0001 ||
+      !this.lastTipNorm ||
+      Math.abs(tip.x - this.lastTipNorm.x) > 0.0001 ||
+      Math.abs(tip.y - this.lastTipNorm.y) > 0.0001;
+    
+    // Determine previous and current positions for rendering
+    let prevWrist: {x: number, y: number};
+    let prevTip: {x: number, y: number};
+    let currWrist: {x: number, y: number};
+    let currTip: {x: number, y: number};
+    
+    if (isNewData) {
+      // New detection arrived!
+      // Shift old current to new previous
+      if (this.currWristScreen && this.currTipScreen) {
+        this.prevWristScreen = { x: this.currWristScreen.x, y: this.currWristScreen.y };
+        this.prevTipScreen = { x: this.currTipScreen.x, y: this.currTipScreen.y };
+      }
+      // Store new current
+      this.currWristScreen = { x: wristScreen.x, y: wristScreen.y };
+      this.currTipScreen = { x: tipScreen.x, y: tipScreen.y };
+      // Update tracking
+      this.lastWristNorm = { x: wrist.x, y: wrist.y };
+      this.lastTipNorm = { x: tip.x, y: tip.y };
+    }
+    // else: no new data, keep curr and prev as-is
+    
+    // Current is always the latest mapped position
+    currWrist = this.currWristScreen ?? wristScreen;
+    currTip = this.currTipScreen ?? tipScreen;
+    
+    // Use stored positions for rendering with interpolation
+    if (this.prevWristScreen && this.prevTipScreen) {
+      // Calculate interpolation factor based on frame rate vs inference rate
+      // e.g., 60fps render / 15fps inference = 0.25, but we cheat and make it 0.5 for drama
+      const interpolationFactor = (this.inferenceRate / this.renderFrameRate) * 2; // 2x for dramatic effect
+      
+      // Interpolate previous position: prev = curr + (stored_prev - curr) * factor
+      // This makes the trail length proportional to actual time
+      prevWrist = {
+        x: currWrist.x + (this.prevWristScreen.x - currWrist.x) * interpolationFactor,
+        y: currWrist.y + (this.prevWristScreen.y - currWrist.y) * interpolationFactor
+      };
+      prevTip = {
+        x: currTip.x + (this.prevTipScreen.x - currTip.x) * interpolationFactor,
+        y: currTip.y + (this.prevTipScreen.y - currTip.y) * interpolationFactor
+      };
+      
+      // Ensure minimum blade thickness (4px perpendicular to sword direction)
+      const dx = currTip.x - currWrist.x;
+      const dy = currTip.y - currWrist.y;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const perpX = (-dy / len) * 4;
+      const perpY = (dx / len) * 4;
+      
+      // Calculate actual distance between prev and curr wrist
+      const wristDist = Math.sqrt(
+        Math.pow(prevWrist.x - currWrist.x, 2) + 
+        Math.pow(prevWrist.y - currWrist.y, 2)
+      );
+      
+      // If too thin, expand perpendicular to minimum width
+      if (wristDist < 4) {
+        prevWrist = { x: currWrist.x - perpX, y: currWrist.y - perpY };
+        prevTip = { x: currTip.x - perpX, y: currTip.y - perpY };
+      }
+    } else {
+      // First detection - create minimal perpendicular thickness
+      const dx = currTip.x - currWrist.x;
+      const dy = currTip.y - currWrist.y;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const perpX = (-dy / len) * 4; // 4px minimum thickness
+      const perpY = (dx / len) * 4;
+      prevWrist = { 
+        x: currWrist.x - perpX, 
+        y: currWrist.y - perpY 
+      };
+      prevTip = { 
+        x: currTip.x - perpX, 
+        y: currTip.y - perpY 
+      };
+    }
 
     this.ctx.save();
-
-    // Outer glow
-    this.ctx.shadowBlur = 30;
+    
+    // Calculate quadrilateral points with some expansion for the glow
+    const glowExpand = 8; // pixels to expand for glow effect
+    
+    // Expanded points for outer glow (offset perpendicular to each edge)
+    const expandEdge = (p1: {x: number, y: number}, p2: {x: number, y: number}, amount: number) => {
+      const edx = p2.x - p1.x;
+      const edy = p2.y - p1.y;
+      const elen = Math.sqrt(edx * edx + edy * edy);
+      const eperpX = (-edy / elen) * amount;
+      const eperpY = (edx / elen) * amount;
+      return {
+        p1x: p1.x + eperpX, p1y: p1.y + eperpY,
+        p2x: p2.x + eperpX, p2y: p2.y + eperpY
+      };
+    };
+    
+    // Outer glow - expanded quadrilateral
+    const outerEdge1 = expandEdge(prevWrist, prevTip, glowExpand * 2);
+    const outerEdge2 = expandEdge(currTip, currWrist, glowExpand * 2);
+    
+    this.ctx.shadowBlur = 40;
     this.ctx.shadowColor = color;
     this.ctx.fillStyle = color;
-    this.ctx.globalAlpha = 0.4;
-
+    this.ctx.globalAlpha = 0.3;
+    
     this.ctx.beginPath();
-    this.ctx.moveTo(wx + perpX * 2, wy + perpY * 2);
-    this.ctx.lineTo(tx + perpX * 3, ty + perpY * 3);
-    this.ctx.lineTo(tx - perpX * 3, ty - perpY * 3);
-    this.ctx.lineTo(wx - perpX * 2, wy - perpY * 2);
+    this.ctx.moveTo(outerEdge1.p1x, outerEdge1.p1y);
+    this.ctx.lineTo(outerEdge1.p2x, outerEdge1.p2y);
+    this.ctx.lineTo(outerEdge2.p1x, outerEdge2.p1y);
+    this.ctx.lineTo(outerEdge2.p2x, outerEdge2.p2y);
     this.ctx.closePath();
     this.ctx.fill();
-
-    // Inner blade
+    
+    // Middle glow
+    const midEdge1 = expandEdge(prevWrist, prevTip, glowExpand);
+    const midEdge2 = expandEdge(currTip, currWrist, glowExpand);
+    
+    this.ctx.shadowBlur = 20;
+    this.ctx.globalAlpha = 0.6;
+    
+    this.ctx.beginPath();
+    this.ctx.moveTo(midEdge1.p1x, midEdge1.p1y);
+    this.ctx.lineTo(midEdge1.p2x, midEdge1.p2y);
+    this.ctx.lineTo(midEdge2.p1x, midEdge2.p1y);
+    this.ctx.lineTo(midEdge2.p2x, midEdge2.p2y);
+    this.ctx.closePath();
+    this.ctx.fill();
+    
+    // Inner glow
+    const innerEdge1 = expandEdge(prevWrist, prevTip, glowExpand * 0.5);
+    const innerEdge2 = expandEdge(currTip, currWrist, glowExpand * 0.5);
+    
     this.ctx.shadowBlur = 10;
     this.ctx.globalAlpha = 0.8;
-
+    
     this.ctx.beginPath();
-    this.ctx.moveTo(wx + perpX, wy + perpY);
-    this.ctx.lineTo(tx + perpX * 2, ty + perpY * 2);
-    this.ctx.lineTo(tx - perpX * 2, ty - perpY * 2);
-    this.ctx.lineTo(wx - perpX, wy - perpY);
+    this.ctx.moveTo(innerEdge1.p1x, innerEdge1.p1y);
+    this.ctx.lineTo(innerEdge1.p2x, innerEdge1.p2y);
+    this.ctx.lineTo(innerEdge2.p1x, innerEdge2.p1y);
+    this.ctx.lineTo(innerEdge2.p2x, innerEdge2.p2y);
     this.ctx.closePath();
     this.ctx.fill();
 
-    // Core (white)
+    // Core (white quadrilateral - the actual blade shape)
     this.ctx.shadowBlur = 0;
     this.ctx.fillStyle = '#ffffff';
     this.ctx.globalAlpha = 1.0;
 
     this.ctx.beginPath();
-    this.ctx.moveTo(wx + perpX * 0.3, wy + perpY * 0.3);
-    this.ctx.lineTo(tx + perpX * 0.5, ty + perpY * 0.5);
-    this.ctx.lineTo(tx - perpX * 0.5, ty - perpY * 0.5);
-    this.ctx.lineTo(wx - perpX * 0.3, wy - perpY * 0.3);
+    this.ctx.moveTo(prevWrist.x, prevWrist.y);
+    this.ctx.lineTo(prevTip.x, prevTip.y);
+    this.ctx.lineTo(currTip.x, currTip.y);
+    this.ctx.lineTo(currWrist.x, currWrist.y);
     this.ctx.closePath();
     this.ctx.fill();
 
