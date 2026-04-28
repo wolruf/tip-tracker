@@ -78,7 +78,7 @@ export async function initDetector(
       );
     }
 
-    console.log(`Detector initialized in ${mode} mode`);
+    console.log(`Detector initialized in ${mode} mode with ${numTargets} targets`);
   } finally {
     isInitializing = false;
   }

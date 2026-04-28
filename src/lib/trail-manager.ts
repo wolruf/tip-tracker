@@ -103,13 +103,9 @@ export class TrailManager {
     });
 
     // Second pass: assign remaining detections by position (new fencers)
-    // Special case: if only 1 detection, always use fencer 'A' (no switching)
     const remaining = Array.from(unassigned.values());
     
-    if (remaining.length === 1) {
-      // Single detection - always use fencer A to prevent color switching
-      assigned.set('A', remaining[0]);
-    } else if (remaining.length > 1) {
+    if (remaining.length > 0) {
       // Multiple detections - sort by position and assign
       remaining.sort((a, b) => a.x - b.x);
 
@@ -129,6 +125,12 @@ export class TrailManager {
           assigned.set('B', detection);
         }
       });
+    }
+    
+    // Single detection case: if only one detection and fencer A is available, use A
+    // This prevents color switching in single-fencer scenarios without breaking two-fencer mode
+    if (remaining.length === 1 && !assigned.has('A')) {
+      assigned.set('A', remaining[0]);
     }
 
     return assigned;
